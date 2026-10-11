@@ -2,9 +2,9 @@ name: Nightly Readwise Sync
 
 on:
   schedule:
-    # 06:20 UTC, twenty minutes behind the Oura nightly. Both write
-    # weekly_metrics, on disjoint columns, but staggering keeps the logs
-    # readable and avoids two jobs patching the same Notion page at once.
+    # 06:20 UTC, twenty minutes behind the Oura nightly. Both push to the
+    # same Notion journal page, on disjoint properties; staggering keeps the
+    # logs readable and avoids two jobs patching that page at once.
     - cron: '20 6 * * *'
   workflow_dispatch:
 
@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Sync Readwise → Supabase → weekly_metrics / Notion
+      - name: Sync Readwise → Supabase → Notion
         env:
           READWISE_API_TOKEN: ${{ secrets.READWISE_API_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

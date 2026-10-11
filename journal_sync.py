@@ -5,11 +5,13 @@ Runs at the end of each week. Replaces the half of kanban's
 sync_journal_to_supabase.py that filled journal_entries; the meal / food-log
 half did not come across.
 
-Sleep columns are deliberately NOT written here. oura.py owns slp_hrs,
-slp_score, slp_hrv, rhr, avg_sleep_time and avg_wake_time, sourcing them from
-oura_weekly (the Supabase source of truth) and pushing them *out* to Notion.
-Reading them back off the Notion page would close a Notion → Supabase → Notion
-loop and let a rounded, one-run-stale copy overwrite the real values.
+This is the reflections sync: the journal text and people, nothing numeric.
+Every weekly number on the Notion page has its own source — sleep (oura_daily),
+reading (readwise_daily), training/body/stress (garmin_daily), food
+(food_log_entries), phone pickups (screentime_weekly) — that rolls up into
+weekly_master and is pushed *out* to Notion. Reading them back off the page
+would close a Supabase → Notion → Supabase loop and let a rounded,
+one-run-stale copy overwrite the real values.
 
 Usage:
     python journal_sync.py                 # last 4 weeks (catches late edits)
@@ -22,7 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from urllib import error as urlerror
@@ -35,11 +36,6 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 NOTION_VERSION = "2022-06-28"
 DEFAULT_LOOKBACK_WEEKS = 4
-
-# A week whose food log was abandoned after a meal or two reports a real-looking
-# but tiny daily average that wrecks every nutrition trend. Treat anything below
-# a subsistence floor as unlogged. Carried over from the original sync.
-MIN_PLAUSIBLE_DAILY_CALS = 900
 
 # Notion properties already mapped to their own column, so the `unstructured`
 # catch-all does not duplicate them.
@@ -80,26 +76,6 @@ def http(url, *, method="GET", headers=None, body=None, timeout=60):
 
 def page_to_row(page, user_id, synced_at):
     props = page.get("properties", {})
-
-    def number(name):
-        return (props.get(name) or {}).get("number")
-
-    def formula_number(name):
-        formula = (props.get(name) or {}).get("formula") or {}
-        if formula.get("type") == "number":
-            return formula.get("number")
-        if formula.get("type") == "string":
-            match = re.search(r"-?[\d,]+(?:\.\d+)?", formula.get("string") or "")
-            return float(match.group(0).replace(",", "")) if match else None
-        return None
-
-    def positive_formula_number(name):
-        value = formula_number(name)
-        return value if value is not None and value > 0 else None
-
-    def rollup_number(name):
-        rollup = (props.get(name) or {}).get("rollup") or {}
-        return rollup.get("number") if rollup.get("type") == "number" else None
 
     def date_value(name):
         return ((props.get(name) or {}).get("date") or {}).get("start")
@@ -145,45 +121,7 @@ def page_to_row(page, user_id, synced_at):
         "people_met": people("People Met"),
         "people_tagged": people("Person"),
         "unstructured": unstructured or None,
-        # Numeric (sleep columns omitted on purpose — see module docstring)
-        "run_miles": number("Run Miles"),
-        "bike_miles": number("Bike Miles"),
-        "swim_yards": number("Swim Yards"),
-        "strength_mins": number("Strength Minutes"),
-        "intensity_mins": number("Intensity Minutes"),
-        "step_count": number("Step Count"),
-        "body_fat": number("Body Fat %"),
-        "weekly_weight": number("Weekly Weight"),
-        "stress": number("Stress Level"),
-        "meditation": number("Meditation Sessions"),
-        # Highlights / Articles / Podcasts & Videos are NOT read back here.
-        # readwise_sync.py owns them: Readwise → readwise_daily →
-        # readwise_weekly → weekly_metrics, and writes the same values out to
-        # Notion. Reading them off the page would re-import our own output.
-        "phone_pickups": number("Total Ph Pick Ups"),
-        "avg_daily_pickups": formula_number("Avg Daily Pick Ups"),
-        "training_hrs": number("Logged Training Hrs"),
-        "consumed_cals": positive_formula_number("Consumed Cals"),
-        "avg_protein": positive_formula_number("Avg Protein"),
-        "calorie_deficit": formula_number("Calorie Deficit"),
-        "garmin_tdee": number("Garmin TDEE"),
-        "non_profile_meals": rollup_number("FL Non Profile"),
-        "dcp_meals": rollup_number("FL DCP"),
-        "drinks": rollup_number("FL Drinks"),
     }
-
-    # Nutrition is derived from intake, so drop the triple together.
-    if row["consumed_cals"] is not None and row["consumed_cals"] < MIN_PLAUSIBLE_DAILY_CALS:
-        row["consumed_cals"] = None
-        row["avg_protein"] = None
-        row["calorie_deficit"] = None
-
-    # "FL Non Profile" is a sum rollup: an empty food log reports 0, which is
-    # indistinguishable from a week of perfect adherence once it is drawn.
-    if row["consumed_cals"] is None:
-        row["non_profile_meals"] = None
-        row["dcp_meals"] = None
-        row["drinks"] = None
 
     return row
 
@@ -270,27 +208,6 @@ def dedupe_by_week(rows):
 
 # ── Supabase ─────────────────────────────────────────────────────────────────
 
-# journal_entries was split on 2026-10-11: narrative stays, numbers moved to
-# weekly_metrics. One Notion page still feeds both, at the same (user_id, week).
-KEY_COLUMNS = ("user_id", "week", "notion_page_id", "source_updated_at", "synced_at")
-
-NARRATIVE_COLUMNS = (
-    "journal_title", "journal_high", "journal_low", "journal_high_of_week",
-    "journal_stressors", "journal_bud", "people_met", "people_tagged",
-    "unstructured",
-)
-
-
-def split_row(row):
-    """One mapped page → (journal_entries row, weekly_metrics row)."""
-    narrative = {k: row[k] for k in KEY_COLUMNS + NARRATIVE_COLUMNS}
-    metrics = {
-        k: v for k, v in row.items()
-        if k in KEY_COLUMNS or k not in NARRATIVE_COLUMNS
-    }
-    return narrative, metrics
-
-
 def upsert(supabase_url, secret_key, table, rows) -> int:
     if not rows:
         return 0
@@ -370,10 +287,8 @@ def main():
             print(f"  {json.dumps(preview, default=str)[:300]}")
         return
 
-    narrative_rows, metric_rows = zip(*(split_row(r) for r in rows))
-    n_journal = upsert(supabase_url, secret_key, "journal_entries", list(narrative_rows))
-    n_metrics = upsert(supabase_url, secret_key, "weekly_metrics", list(metric_rows))
-    print(f"Upserted {n_journal} journal_entries rows, {n_metrics} weekly_metrics rows")
+    n_journal = upsert(supabase_url, secret_key, "journal_entries", rows)
+    print(f"Upserted {n_journal} journal_entries rows")
 
     for row in rows[-3:]:
         bits = [f"{k}={'yes' if row[k] else '—'}" for k in

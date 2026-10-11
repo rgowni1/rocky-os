@@ -19,8 +19,10 @@ function assertConfig() {
 
 /**
  * A week, joined from every source. Backed by the weekly_master view:
- * sleep from oura_weekly, reading from readwise_weekly, the rest from
- * weekly_metrics (Notion), with frozen pre-Oura history coalesced underneath.
+ * sleep from oura_weekly, reading from readwise_weekly, training/body/stress
+ * from garmin_weekly, food from food_weekly, phone pickups from
+ * screentime_weekly, with frozen legacy_notion_table history underneath.
+ * calorie_deficit is garmin_tdee − consumed_cals, computed in the view.
  */
 export type WeeklyMetricsRow = {
   week: string;
@@ -54,6 +56,12 @@ export type WeeklyMetricsRow = {
   consumed_cals: number | null;
   avg_protein: number | null;
   calorie_deficit: number | null;
+  garmin_tdee: number | null;
+  /** garmin_tdee × 0.90 (smartwatch overestimate); null for pre-garmin_daily weeks. */
+  adjusted_tdee: number | null;
+  /** Days behind the Garmin averages; null for weeks served from legacy. */
+  garmin_full_days: number | null;
+  garmin_partial_days: number | null;
 };
 
 /** The narrative half of a journal week — the text a word cloud is built from. */
