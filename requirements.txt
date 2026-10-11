@@ -1,8 +1,4 @@
 requests
 pandas
-withings-api
 pytz
 python-dotenv
-pydantic>=2.0
-wordcloud
-matplotlib
