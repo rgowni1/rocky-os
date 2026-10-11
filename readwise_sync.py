@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Readwise → Supabase (source of truth), then weekly_metrics / Notion.
+"""Readwise → Supabase (source of truth), then weekly_master / Notion.
 
 Mirrors oura.py: highlights land in public.readwise_daily at
-(calendar_date, book_id) grain, readwise_weekly rolls them up, and both
-weekly_metrics and the Notion Logging Journal are filled from that view.
+(calendar_date, book_id) grain, readwise_weekly rolls them up, weekly_master
+joins it for readers, and the Notion Logging Journal is pushed from it.
 
 Split out of oura.py, where Readwise weekly counts were computed in memory and
 written only to Notion — journal_sync.py then read them back into
@@ -84,18 +84,31 @@ def fetch_highlights(token, start: date, end: date) -> list[dict]:
 
 
 def fetch_books(token, book_ids) -> dict:
-    """Book metadata keyed by id. One request per book, so cache across calls."""
+    """Book metadata keyed by id.
+
+    Pages the list endpoint rather than fetching each book individually. The
+    account has ~3.6k sources, so per-book lookups would mean thousands of
+    requests on a backfill; this is a handful.
+    """
     headers = {"Authorization": f"Token {token}"}
+    wanted = set(book_ids)
     books = {}
-    for book_id in sorted(book_ids):
-        try:
-            response = requests.get(
-                f"https://readwise.io/api/v2/books/{book_id}/", headers=headers, timeout=30
-            )
-            response.raise_for_status()
-            books[book_id] = response.json()
-        except Exception as exc:
-            print(f"  ⚠ book {book_id} lookup failed ({exc}); recorded without metadata")
+    next_page = "https://readwise.io/api/v2/books/"
+    params = {"page_size": 1000}
+    while next_page and len(books) < len(wanted):
+        response = requests.get(next_page, headers=headers, params=params, timeout=60)
+        response.raise_for_status()
+        payload = response.json()
+        for book in payload.get("results") or []:
+            if book.get("id") in wanted:
+                books[book["id"]] = book
+        next_page = payload.get("next")
+        params = {}
+
+    missing = wanted - set(books)
+    if missing:
+        print(f"  ⚠ {len(missing)} source(s) had no metadata; recorded uncategorised")
+        for book_id in missing:
             books[book_id] = {}
     return books
 
@@ -176,36 +189,6 @@ def fetch_readwise_weekly(supabase_url, secret_key, user_id, week_start: date, w
     return body or []
 
 
-def upsert_weekly_metrics(supabase_url, secret_key, user_id, weeks) -> int:
-    if not weeks:
-        return 0
-    synced_at = datetime.now(pytz.UTC).isoformat()
-    rows = [{
-        "user_id": user_id,
-        "week": week["week_start"],
-        "synced_at": synced_at,
-        "highlights": week.get("highlights"),
-        "articles": week.get("distinct_articles"),
-        "podcasts": week.get("distinct_podcasts_videos"),
-    } for week in weeks]
-
-    headers = {
-        "apikey": secret_key,
-        "Authorization": f"Bearer {secret_key}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-    }
-    endpoint = (
-        f"{supabase_url}/rest/v1/weekly_metrics?"
-        + urlparse.urlencode({"on_conflict": "user_id,week"})
-    )
-    status, body = http(endpoint, method="POST", headers=headers, body=rows)
-    if status >= 400:
-        print(f"  ⚠ weekly_metrics readwise upsert {status}: {body}")
-        return 0
-    return len(rows)
-
-
 # ── Notion ───────────────────────────────────────────────────────────────────
 
 def notion_headers(token):
@@ -263,7 +246,7 @@ def sync_notion_from_weekly(weeks, database_id, token) -> int:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Readwise → Supabase → weekly_metrics / Notion")
+    parser = argparse.ArgumentParser(description="Readwise → Supabase → Notion")
     parser.add_argument("--backfill", nargs="+", metavar="DATE",
                         help="Backfill start [end]. End defaults to today (Pacific).")
     parser.add_argument("--skip-notion", action="store_true")
@@ -304,10 +287,6 @@ def main():
     week_end = end - timedelta(days=end.weekday())
     weeks = fetch_readwise_weekly(supabase_url, secret_key, user_id, week_start, week_end)
     print(f"readwise_weekly weeks in range: {len(weeks)}")
-
-    n = upsert_weekly_metrics(supabase_url, secret_key, user_id, weeks)
-    if n:
-        print(f"Patched weekly_metrics readwise for {n} weeks")
 
     if not args.skip_notion:
         if not notion_database_id or not notion_token:

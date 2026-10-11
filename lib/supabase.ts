@@ -18,10 +18,9 @@ function assertConfig() {
 }
 
 /**
- * The quantitative half of a week. Every flow lands here:
- * Oura → oura_daily → oura_weekly → sleep columns;
- * Readwise → readwise_daily → readwise_weekly → highlights/articles/podcasts;
- * Notion → journal_sync → everything else.
+ * A week, joined from every source. Backed by the weekly_master view:
+ * sleep from oura_weekly, reading from readwise_weekly, the rest from
+ * weekly_metrics (Notion), with frozen pre-Oura history coalesced underneath.
  */
 export type WeeklyMetricsRow = {
   week: string;
@@ -31,6 +30,11 @@ export type WeeklyMetricsRow = {
   rhr: number | null;
   avg_sleep_time: string | null;
   avg_wake_time: string | null;
+  breath_rate: number | null;
+  slp_latency: number | null;
+  /** Nights of Oura data behind the sleep averages; null for pre-ring weeks. */
+  nights: number | null;
+  distinct_books: number | null;
   run_miles: number | null;
   bike_miles: number | null;
   swim_yards: number | null;
@@ -96,7 +100,7 @@ export async function fetchOuraDaily(startDate: string, endDate: string): Promis
 }
 
 /**
- * Weekly metrics from Supabase. Both bounds are Mondays.
+ * Weekly metrics from the weekly_master view. Both bounds are Mondays.
  *
  * Prefer this over reading Notion or oura_daily directly from the app —
  * Supabase is the source of truth and Notion is downstream of it.
@@ -113,7 +117,7 @@ export async function fetchWeeklyMetrics(
     `&order=week.asc` +
     (userId ? `&user_id=eq.${userId}` : "");
 
-  const res = await fetch(`${url}/rest/v1/weekly_metrics?${qs}`, {
+  const res = await fetch(`${url}/rest/v1/weekly_master?${qs}`, {
     headers: {
       apikey: key!,
       Authorization: `Bearer ${key}`,
@@ -122,7 +126,7 @@ export async function fetchWeeklyMetrics(
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`weekly_metrics fetch failed ${res.status}: ${text}`);
+    throw new Error(`weekly_master fetch failed ${res.status}: ${text}`);
   }
   return res.json();
 }
