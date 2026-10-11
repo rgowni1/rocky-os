@@ -2,7 +2,7 @@
 """Oura → Supabase (source of truth), then Notion / consumers from Supabase.
 
 Daily sleep rows land in public.oura_daily. Weekly averages live in the
-oura_weekly view. Notion Logging Journal sleep fields and journal_entries
+oura_weekly view. Notion Logging Journal sleep fields and weekly_metrics
 sleep columns are filled from that view — not from the Oura API directly.
 
 Usage:
@@ -299,7 +299,11 @@ def fetch_oura_weekly(supabase_url, secret_key, user_id, week_start: date, week_
 
 
 def upsert_journal_sleep(supabase_url, secret_key, user_id, weeks: list[dict]) -> int:
-    """Patch journal_entries sleep columns from oura_weekly (merge-duplicates)."""
+    """Patch weekly_metrics sleep columns from oura_weekly (merge-duplicates).
+
+    These columns moved out of journal_entries when it was split into narrative
+    (journal_entries) and numbers (weekly_metrics) on 2026-10-11.
+    """
     if not weeks:
         return 0
     synced_at = datetime.now(pytz.UTC).isoformat()
@@ -323,12 +327,12 @@ def upsert_journal_sleep(supabase_url, secret_key, user_id, weeks: list[dict]) -
         "Prefer": "resolution=merge-duplicates,return=minimal",
     }
     endpoint = (
-        f"{supabase_url}/rest/v1/journal_entries?"
+        f"{supabase_url}/rest/v1/weekly_metrics?"
         + urlparse.urlencode({"on_conflict": "user_id,week"})
     )
     status, body = http(endpoint, method="POST", headers=headers, body=rows)
     if status >= 400:
-        print(f"  ⚠ journal_entries sleep upsert {status}: {body}")
+        print(f"  ⚠ weekly_metrics sleep upsert {status}: {body}")
         return 0
     return len(rows)
 
@@ -561,7 +565,7 @@ def main():
 
     journal_n = upsert_journal_sleep(supabase_url, secret_key, user_id, weeks)
     if journal_n:
-        print(f"Patched journal_entries sleep for {journal_n} weeks")
+        print(f"Patched weekly_metrics sleep for {journal_n} weeks")
 
     if not args.skip_notion:
         if not notion_database_id or not notion_token:

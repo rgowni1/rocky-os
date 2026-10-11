@@ -268,7 +268,28 @@ def dedupe_by_week(rows):
 
 # ── Supabase ─────────────────────────────────────────────────────────────────
 
-def upsert_journal_entries(supabase_url, secret_key, rows) -> int:
+# journal_entries was split on 2026-10-11: narrative stays, numbers moved to
+# weekly_metrics. One Notion page still feeds both, at the same (user_id, week).
+KEY_COLUMNS = ("user_id", "week", "notion_page_id", "source_updated_at", "synced_at")
+
+NARRATIVE_COLUMNS = (
+    "journal_title", "journal_high", "journal_low", "journal_high_of_week",
+    "journal_stressors", "journal_bud", "people_met", "people_tagged",
+    "unstructured",
+)
+
+
+def split_row(row):
+    """One mapped page → (journal_entries row, weekly_metrics row)."""
+    narrative = {k: row[k] for k in KEY_COLUMNS + NARRATIVE_COLUMNS}
+    metrics = {
+        k: v for k, v in row.items()
+        if k in KEY_COLUMNS or k not in NARRATIVE_COLUMNS
+    }
+    return narrative, metrics
+
+
+def upsert(supabase_url, secret_key, table, rows) -> int:
     if not rows:
         return 0
     headers = {
@@ -278,7 +299,7 @@ def upsert_journal_entries(supabase_url, secret_key, rows) -> int:
         "Prefer": "resolution=merge-duplicates,return=minimal",
     }
     endpoint = (
-        f"{supabase_url}/rest/v1/journal_entries?"
+        f"{supabase_url}/rest/v1/{table}?"
         + urlparse.urlencode({"on_conflict": "user_id,week"})
     )
     synced = 0
@@ -286,7 +307,7 @@ def upsert_journal_entries(supabase_url, secret_key, rows) -> int:
         chunk = rows[i:i + 100]
         status, body = http(endpoint, method="POST", headers=headers, body=chunk)
         if status >= 400:
-            raise SystemExit(f"Supabase journal_entries upsert error {status}: {body}")
+            raise SystemExit(f"Supabase {table} upsert error {status}: {body}")
         synced += len(chunk)
     return synced
 
@@ -347,8 +368,10 @@ def main():
             print(f"  {json.dumps(preview, default=str)[:300]}")
         return
 
-    synced = upsert_journal_entries(supabase_url, secret_key, rows)
-    print(f"Upserted {synced} journal_entries rows")
+    narrative_rows, metric_rows = zip(*(split_row(r) for r in rows))
+    n_journal = upsert(supabase_url, secret_key, "journal_entries", list(narrative_rows))
+    n_metrics = upsert(supabase_url, secret_key, "weekly_metrics", list(metric_rows))
+    print(f"Upserted {n_journal} journal_entries rows, {n_metrics} weekly_metrics rows")
 
     for row in rows[-3:]:
         bits = [f"{k}={'yes' if row[k] else '—'}" for k in
