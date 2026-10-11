@@ -156,8 +156,10 @@ def page_to_row(page, user_id, synced_at):
         "weekly_weight": number("Weekly Weight"),
         "stress": number("Stress Level"),
         "meditation": number("Meditation Sessions"),
-        "articles": number("Articles"),
-        "podcasts": number("Podcasts & Videos"),
+        # Highlights / Articles / Podcasts & Videos are NOT read back here.
+        # readwise_sync.py owns them: Readwise → readwise_daily →
+        # readwise_weekly → weekly_metrics, and writes the same values out to
+        # Notion. Reading them off the page would re-import our own output.
         "phone_pickups": number("Total Ph Pick Ups"),
         "avg_daily_pickups": formula_number("Avg Daily Pick Ups"),
         "training_hrs": number("Logged Training Hrs"),

@@ -6,7 +6,7 @@ oura_weekly view. Notion Logging Journal sleep fields and weekly_metrics
 sleep columns are filled from that view — not from the Oura API directly.
 
 Usage:
-    python oura.py                          # last 14 days + Notion/Readwise for current week
+    python oura.py                          # last 14 days, then Notion for those weeks
     python oura.py --backfill 2026-01-01    # through today
     python oura.py --backfill 2026-01-01 2026-10-05
     python oura.py --skip-notion            # Supabase only
@@ -63,21 +63,6 @@ def http(url, *, method="GET", headers=None, body=None, timeout=60):
 
 def parse_ymd(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
-
-
-def get_nth_last_monday_sunday(n=0, timezone_name="America/Los_Angeles"):
-    """Monday–Sunday week boundaries in Pacific time."""
-    pacific_now = datetime.now(pytz.UTC).astimezone(pytz.timezone(timezone_name))
-    today = pacific_now.date()
-
-    if today.weekday() == 6 and pacific_now.hour >= 21:
-        this_monday = today - timedelta(days=6)
-        target_monday = this_monday - timedelta(weeks=n)
-    else:
-        this_monday = today - timedelta(days=today.weekday())
-        target_monday = this_monday - timedelta(weeks=n)
-
-    return target_monday, target_monday + timedelta(days=6)
 
 
 # ── Oura ─────────────────────────────────────────────────────────────────────
@@ -363,18 +348,6 @@ def find_notion_page_for_week(database_id, token, week_start: date):
     return results[0]["id"] if results else None
 
 
-def get_nth_latest_page_id(notion_database_id, notion_token, n=1):
-    url = f"https://api.notion.com/v1/databases/{notion_database_id}/query"
-    data = {
-        "sorts": [{"timestamp": "created_time", "direction": "descending"}],
-        "page_size": n,
-    }
-    response = requests.post(url, headers=notion_headers(notion_token), json=data, timeout=60)
-    response.raise_for_status()
-    results = response.json()["results"]
-    return results[n - 1]["id"] if len(results) >= n else None
-
-
 def update_notion_page(page_id, notion_token, properties):
     url = f"https://api.notion.com/v1/pages/{page_id}"
     response = requests.patch(
@@ -428,89 +401,6 @@ def sync_notion_sleep_from_weekly(weeks: list[dict], database_id, token) -> int:
     return updated
 
 
-# ── Readwise (still Notion-only; not Oura SoT) ───────────────────────────────
-
-def collect_readwise_data(api_token, start_date, end_date):
-    if not api_token:
-        return None
-
-    highlights_endpoint = "https://readwise.io/api/v2/highlights/"
-    books_endpoint = "https://readwise.io/api/v2/books/"
-    headers = {"Authorization": f"Token {api_token}"}
-
-    start_date_str = start_date.isoformat() + "T00:00:00Z"
-    end_date_str = (end_date + timedelta(days=1)).isoformat() + "T00:00:00Z"
-
-    all_highlights = []
-    next_page = highlights_endpoint
-    params = {
-        "page_size": 1000,
-        "highlighted_at__gt": start_date_str,
-        "highlighted_at__lt": end_date_str,
-    }
-
-    try:
-        while next_page:
-            response = requests.get(next_page, headers=headers, params=params, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            all_highlights.extend(data.get("results", []))
-            next_page = data.get("next")
-            params = {}
-
-        book_ids = {h.get("book_id") for h in all_highlights if h.get("book_id")}
-        distinct_articles = distinct_podcasts = distinct_youtube_videos = 0
-
-        for book_id in book_ids:
-            try:
-                book_response = requests.get(
-                    f"{books_endpoint}{book_id}/", headers=headers, timeout=30
-                )
-                book_response.raise_for_status()
-                book = book_response.json()
-                source_url = book.get("source_url", "") or book.get("url", "")
-                is_youtube = source_url and (
-                    "youtube.com" in source_url.lower() or "youtu.be" in source_url.lower()
-                )
-                if is_youtube:
-                    distinct_youtube_videos += 1
-                else:
-                    category = (book.get("category") or "").lower()
-                    if category == "articles":
-                        distinct_articles += 1
-                    elif category == "podcasts":
-                        distinct_podcasts += 1
-            except Exception:
-                continue
-
-        return {
-            "total_highlights": len(all_highlights),
-            "distinct_articles": distinct_articles,
-            "distinct_podcasts": distinct_podcasts,
-            "distinct_youtube_videos": distinct_youtube_videos,
-        }
-    except Exception:
-        return None
-
-
-def update_notion_readwise(readwise_data, database_id, token, page_number=1):
-    if not readwise_data:
-        return
-    page_id = get_nth_latest_page_id(database_id, token, page_number)
-    if not page_id:
-        return
-    distinct_av = int(readwise_data.get("distinct_podcasts", 0)) + int(
-        readwise_data.get("distinct_youtube_videos", 0)
-    )
-    properties = {
-        "Highlights": {"number": int(readwise_data.get("total_highlights", 0))},
-        "Articles": {"number": int(readwise_data.get("distinct_articles", 0))},
-        "Podcasts & Videos": {"number": distinct_av},
-    }
-    print(f"  Readwise → Notion: {list(properties.keys())}")
-    update_notion_page(page_id, token, properties)
-
-
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -522,7 +412,6 @@ def main():
         help="Backfill start [end]. End defaults to today (Pacific).",
     )
     parser.add_argument("--skip-notion", action="store_true", help="Skip Notion consumer sync")
-    parser.add_argument("--skip-readwise", action="store_true", help="Skip Readwise → Notion")
     parser.add_argument(
         "--lookback-days",
         type=int,
@@ -539,7 +428,6 @@ def main():
 
     notion_database_id = os.getenv("NOTION_DATABASE_ID") or os.getenv("NOTION_JOURNAL_DB_ID")
     notion_token = os.getenv("NOTION_TOKEN")
-    readwise_api_token = os.getenv("READWISE_API_TOKEN")
 
     today = datetime.now(pytz.UTC).astimezone(PACIFIC).date()
     if args.backfill:
@@ -574,12 +462,6 @@ def main():
             print("Syncing Notion sleep fields from oura_weekly…")
             n = sync_notion_sleep_from_weekly(weeks, notion_database_id, notion_token)
             print(f"Updated {n} Notion week pages")
-
-            if not args.skip_readwise and readwise_api_token:
-                cur_start, cur_end = get_nth_last_monday_sunday(0)
-                print(f"Readwise for current week {cur_start} → {cur_end}")
-                rw = collect_readwise_data(readwise_api_token, cur_start, cur_end)
-                update_notion_readwise(rw, notion_database_id, notion_token, page_number=1)
 
     print("\nSample weeks:")
     for week in weeks[-4:]:
