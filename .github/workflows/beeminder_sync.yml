@@ -1,0 +1,38 @@
+name: Beeminder Sync (Weekly)
+
+on:
+  schedule:
+    - cron: '0 20 * * 0'  # 8:00 PM UTC Sunday
+  workflow_dispatch:
+    inputs:
+      week:
+        description: "Week to sync (Sunday = end of week)"
+        required: false
+        default: "this"
+        type: choice
+        options:
+          - this
+          - previous
+
+jobs:
+  beeminder-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Sync Notion → Beeminder
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          BEEMINDER_USERNAME: ${{ secrets.BEEMINDER_USERNAME }}
+          BEEMINDER_AUTH_TOKEN: ${{ secrets.BEEMINDER_AUTH_TOKEN }}
+        run: python beeminder_sync.py ${{ github.event_name == 'workflow_dispatch' && inputs.week || 'this' }}
