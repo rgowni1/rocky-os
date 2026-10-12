@@ -3,8 +3,8 @@ name: Weekly Journal Sync
 on:
   schedule:
     # 07:10 UTC Monday = 00:10 Pacific Monday — just after the journal week
-    # closes, so the week being read is complete. Ten minutes behind the Oura
-    # nightly (06:00 UTC) which owns the sleep columns on the same table.
+    # closes, so the week being read is complete and its High / Low / Bud are
+    # summarised from the finished text.
     - cron: '10 7 * * 1'
   workflow_dispatch:
     inputs:
@@ -38,4 +38,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           KANBAN_USER_ID: ${{ secrets.KANBAN_USER_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python journal_sync.py --weeks ${{ github.event_name == 'workflow_dispatch' && inputs.weeks || '4' }}

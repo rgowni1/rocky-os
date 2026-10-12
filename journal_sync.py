@@ -1,30 +1,42 @@
 #!/usr/bin/env python3
 """Notion Logging Journal → Supabase public.journal_entries.
 
-Runs at the end of each week. Replaces the half of kanban's
-sync_journal_to_supabase.py that filled journal_entries; the meal / food-log
-half did not come across.
+This is the reflections sync. For each weekly journal page it stores:
 
-This is the reflections sync: the journal text and people, nothing numeric.
-Every weekly number on the Notion page has its own source — sleep (oura_daily),
-reading (readwise_daily), training/body/stress (garmin_daily), food
-(food_log_entries), phone pickups (screentime_weekly) — that rolls up into
-weekly_master and is pushed *out* to Notion. Reading them back off the page
-would close a Supabase → Notion → Supabase loop and let a rounded,
-one-run-stale copy overwrite the real values.
+    journal_raw_text   the page body as indented plain text — the day-by-day
+                       bullets and the end-of-week Claude notes
+    journal_high / journal_low / journal_bud
+                       generated from that text with Claude
+
+Nothing numeric is read here. Every weekly number on the Notion page has its
+own source — sleep (oura_daily), reading (readwise_daily), training/body/stress
+(garmin_daily), food (food_log_entries), phone pickups (screentime_weekly) —
+that rolls up into weekly_master and is pushed *out* to Notion. Reading them
+back off the page would close a Supabase → Notion → Supabase loop.
+
+A week is only re-summarised when its raw text changes (journal_summary_of
+holds the md5 of the text the summaries came from), so re-runs are cheap and
+history is not rewritten. Weeks summarised before this existed carry the
+Notion High / Low properties and are adopted as-is until they are edited.
+
+Without ANTHROPIC_API_KEY the raw text still syncs; summaries wait for a run
+that has the key.
 
 Usage:
     python journal_sync.py                 # last 4 weeks (catches late edits)
     python journal_sync.py --weeks 12
     python journal_sync.py --all           # every week in the database
+    python journal_sync.py --regenerate    # re-summarise even unchanged weeks
     python journal_sync.py --dry-run       # fetch and map, write nothing
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from urllib import error as urlerror
 from urllib import parse as urlparse
@@ -36,16 +48,29 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 NOTION_VERSION = "2022-06-28"
 DEFAULT_LOOKBACK_WEEKS = 4
+# Notion allows ~3 requests/second; a page body is one request per nested block.
+NOTION_REQUEST_GAP_S = 0.34
 
-# Notion properties already mapped to their own column, so the `unstructured`
-# catch-all does not duplicate them.
-MAPPED_TEXT_PROPS = {
-    "High", "Low", "High Of the Week", "Stressors", "Bud",
-    "Avg Sleep Time", "Avg Wake Time",
+MODEL = "claude-opus-5-5"
+
+# Block types whose text is not the journal: the synced quarterly-goals block
+# is identical on every page, and the rest carry no prose.
+SKIPPED_BLOCK_TYPES = {
+    "synced_block", "child_page", "child_database", "link_to_page",
+    "divider", "table_of_contents", "breadcrumb", "column_list",
+    "image", "video", "file", "pdf", "embed", "bookmark", "equation",
 }
 
-# Empty journal templates come back with these instead of nothing.
-PLACEHOLDERS = {"", "no content", "n/a", "-"}
+# Template scaffolding. A block whose whole text is one of these is dropped
+# unless something was written beneath it, so an untouched "Wed" disappears
+# while "Tue" with a bullet under it stays as context.
+TEMPLATE_LABELS = {
+    "journalling", "journaling", "reflect - high, low and goals",
+    "highs/energizers", "lows/stressors", "bud", "food journal",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+    "-", "",
+}
 
 
 # ── env / http ───────────────────────────────────────────────────────────────
@@ -70,70 +95,24 @@ def http(url, *, method="GET", headers=None, body=None, timeout=60):
         except Exception:
             payload = {"error": str(exc)}
         return exc.code, payload
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        # Status 0 = never got a response (timeout, reset); callers may retry.
+        return 0, {"error": str(exc)}
 
 
-# ── Notion → row ─────────────────────────────────────────────────────────────
-
-def page_to_row(page, user_id, synced_at):
-    props = page.get("properties", {})
-
-    def date_value(name):
-        return ((props.get(name) or {}).get("date") or {}).get("start")
-
-    def rich_text(name):
-        parts = (props.get(name) or {}).get("rich_text", [])
-        text = "".join(part.get("plain_text", "") for part in parts).strip()
-        return None if text.lower() in PLACEHOLDERS else text
-
-    def title(name):
-        parts = (props.get(name) or {}).get("title", [])
-        text = "".join(part.get("plain_text", "") for part in parts).strip()
-        return text or None
-
-    def people(name):
-        entries = (props.get(name) or {}).get("people", [])
-        names = [p.get("name") for p in entries if p.get("name")]
-        return names or None
-
-    # Any other text property, so a new Notion field is captured without a
-    # migration. Promote a key to a real column once something queries it.
-    unstructured = {}
-    for prop_name, prop in props.items():
-        if prop.get("type") != "rich_text" or prop_name in MAPPED_TEXT_PROPS:
-            continue
-        value = rich_text(prop_name)
-        if value:
-            unstructured[prop_name] = value
-
-    row = {
-        "user_id": user_id,
-        "week": date_value("Week of Journal"),
-        "notion_page_id": page.get("id"),
-        "source_updated_at": page.get("last_edited_time"),
-        "synced_at": synced_at,
-        # Narrative / unstructured
-        "journal_title": title("Name"),
-        "journal_high": rich_text("High"),
-        "journal_low": rich_text("Low"),
-        "journal_high_of_week": rich_text("High Of the Week"),
-        "journal_stressors": rich_text("Stressors"),
-        "journal_bud": rich_text("Bud"),
-        "people_met": people("People Met"),
-        "people_tagged": people("Person"),
-        "unstructured": unstructured or None,
-    }
-
-    return row
-
-
-def fetch_notion_rows(token, database_id, user_id, since: date | None):
-    headers = {
+def notion_headers(token):
+    return {
         "Authorization": f"Bearer {token}",
         "Notion-Version": NOTION_VERSION,
         "Content-Type": "application/json",
     }
-    synced_at = datetime.now(timezone.utc).isoformat()
-    rows = []
+
+
+# ── Notion pages ─────────────────────────────────────────────────────────────
+
+def fetch_pages(token, database_id, since: date | None):
+    """Journal pages with a Week of Journal date, oldest first."""
+    pages = []
     cursor = None
     while True:
         body = {
@@ -150,75 +129,211 @@ def fetch_notion_rows(token, database_id, user_id, since: date | None):
 
         status, payload = http(
             f"https://api.notion.com/v1/databases/{database_id}/query",
-            method="POST", headers=headers, body=body,
+            method="POST", headers=notion_headers(token), body=body,
         )
         if status >= 400:
             raise SystemExit(f"Notion query error {status}: {payload}")
 
         for page in payload.get("results") or []:
-            row = page_to_row(page, user_id, synced_at)
+            week = (((page.get("properties") or {}).get("Week of Journal") or {}).get("date") or {}).get("start")
             # A page with no "Week of Journal" has no key to upsert on.
-            if not row["week"]:
-                continue
-            rows.append(row)
+            if week:
+                pages.append({
+                    "id": page["id"],
+                    "week": week,
+                    "last_edited_time": page.get("last_edited_time"),
+                })
 
         if not payload.get("has_more"):
-            break
+            return pages
         cursor = payload.get("next_cursor")
 
-    return dedupe_by_week(rows)
+
+def fetch_children(token, block_id):
+    blocks = []
+    cursor = None
+    failures = 0
+    while True:
+        query = {"page_size": 100}
+        if cursor:
+            query["start_cursor"] = cursor
+        time.sleep(NOTION_REQUEST_GAP_S)
+        status, payload = http(
+            f"https://api.notion.com/v1/blocks/{block_id}/children?{urlparse.urlencode(query)}",
+            headers=notion_headers(token),
+        )
+        if status == 429:
+            time.sleep(float((payload or {}).get("retry_after") or 2))
+            continue
+        # A full --all backfill is a few thousand requests; one dropped
+        # connection should not throw the whole run away.
+        if (status == 0 or status >= 500) and failures < 4:
+            failures += 1
+            time.sleep(2 ** failures)
+            continue
+        if status == 0 or status >= 400:
+            raise SystemExit(f"Notion blocks error {status} on {block_id}: {payload}")
+        blocks.extend(payload.get("results") or [])
+        if not payload.get("has_more"):
+            return blocks
+        cursor = payload.get("next_cursor")
 
 
-NARRATIVE_KEYS = (
-    "journal_high", "journal_low", "journal_high_of_week",
-    "journal_stressors", "journal_bud",
-)
+def block_lines(token, blocks, depth=0):
+    """Render blocks as indented text, pruning untouched template labels."""
+    lines = []
+    for block in blocks:
+        kind = block.get("type")
+        if kind in SKIPPED_BLOCK_TYPES:
+            continue
+        content = block.get(kind) or {}
+        text = "".join(part.get("plain_text", "") for part in content.get("rich_text") or []).strip()
+        if kind == "to_do" and text:
+            text = f"[{'x' if content.get('checked') else ' '}] {text}"
+
+        children = block_lines(token, fetch_children(token, block["id"]), depth + 1) if block.get("has_children") else []
+        if text.lower() in TEMPLATE_LABELS and not children:
+            continue
+
+        indent = "  " * depth
+        if kind.startswith("heading_"):
+            lines.append(f"{indent}{'#' * int(kind[-1])} {text}")
+        elif kind in ("bulleted_list_item", "numbered_list_item", "to_do", "toggle"):
+            lines.append(f"{indent}- {text}")
+        elif text:
+            lines.append(f"{indent}{text}")
+        lines.extend(children)
+    return lines
 
 
-def _content_rank(row):
-    """Rank candidates for the same week: most narrative first, then freshest.
-
-    Deliberately NOT based on the page title. 31 weeks are titled "Weekly
-    Template" yet hold genuine journal text (a contiguous run from 2025-07-28 to
-    2026-01-12 among them), so filtering on the title silently drops real weeks.
-    The 21 unfilled duplicates that forced this all sit on 2023-01-12 and lose
-    on content length instead. Page id breaks ties so runs are reproducible.
-    """
-    text_len = sum(len(row.get(k) or "") for k in NARRATIVE_KEYS)
-    return (text_len, row["source_updated_at"] or "", row["notion_page_id"] or "")
+def page_raw_text(token, page_id):
+    text = "\n".join(block_lines(token, fetch_children(token, page_id))).strip()
+    return text or None
 
 
 def dedupe_by_week(rows):
     """One row per week — the upsert targets (user_id, week).
 
-    Postgres rejects an ON CONFLICT batch that touches the same key twice, so a
-    duplicate week fails the whole request rather than just itself.
+    Keeps the page with the most raw text, then the freshest edit, then the
+    page id so runs are reproducible. Deliberately not by title: dozens of
+    real weeks are still titled "Weekly Template".
     """
+    def rank(row):
+        return (len(row["journal_raw_text"] or ""), row["source_updated_at"] or "", row["notion_page_id"])
+
     best = {}
     for row in rows:
         current = best.get(row["week"])
-        if current is None or _content_rank(row) > _content_rank(current):
+        if current is None or rank(row) > rank(current):
             best[row["week"]] = row
-
     dropped = len(rows) - len(best)
     if dropped:
         print(f"  Collapsed {dropped} duplicate-week page(s), keeping the fullest each")
     return [best[week] for week in sorted(best)]
 
 
+# ── Summaries ────────────────────────────────────────────────────────────────
+
+SUMMARY_SYSTEM = """You turn one week of someone's personal journal into three short fields for their weekly log.
+
+- high: the week's energizers — the moments, wins or people that gave energy.
+- low: the week's stressors — what drained, went wrong or caused friction.
+- bud: something emerging that is worth building on — a new idea, habit, \
+insight or relationship that is starting to grow.
+
+Style: one sentence each, at most ~40 words, concrete and specific (name the \
+day, person or activity when the notes do). Write in a clipped past-tense \
+log voice without "I" or "the author", like:
+  high: "Good session Thursday with strong reps, motivating conversations Friday fueling product drive."
+  low: "Very bad idea to go to San Jose without a car, wasting three hours on Tuesday trying to get back."
+
+Use only what the notes say. If the notes give nothing for a field, return an \
+empty string for it rather than inventing one."""
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "high": {"type": "string"},
+        "low": {"type": "string"},
+        "bud": {"type": "string"},
+    },
+    "required": ["high", "low", "bud"],
+    "additionalProperties": False,
+}
+
+
+def make_client():
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("  ANTHROPIC_API_KEY not set — syncing raw text only; summaries wait for a keyed run")
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        print("  anthropic>=1.0 not installed (needs Python 3.10+) — syncing raw text only")
+        return None
+    return anthropic.Anthropic()
+
+
+def summarize(client, week, raw_text):
+    """{journal_high, journal_low, journal_bud}, or None if Claude declined."""
+    response = client.beta.messages.create(
+        model=MODEL,
+        max_tokens=16000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        output_config={
+            "effort": "low",
+            "format": {"type": "json_schema", "schema": SUMMARY_SCHEMA},
+        },
+        system=SUMMARY_SYSTEM,
+        messages=[{
+            "role": "user",
+            "content": f"Journal for the week of {week}:\n\n<journal>\n{raw_text}\n</journal>",
+        }],
+    )
+    if response.stop_reason in ("refusal", "max_tokens"):
+        print(f"  ⚠ {week}: summary stopped ({response.stop_reason}); keeping previous values")
+        return None
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    fields = json.loads(text)
+    return {f"journal_{k}": (fields.get(k) or "").strip() or None for k in ("high", "low", "bud")}
+
+
+def text_hash(text):
+    return hashlib.md5(text.encode()).hexdigest()
+
+
 # ── Supabase ─────────────────────────────────────────────────────────────────
 
-def upsert(supabase_url, secret_key, table, rows) -> int:
+def supabase_headers(secret_key):
+    return {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+
+
+def fetch_existing(supabase_url, secret_key, user_id, weeks):
+    """Current summaries per week, so unchanged weeks are not re-summarised."""
+    if not weeks:
+        return {}
+    qs = urlparse.urlencode({
+        "select": "week,journal_raw_text,journal_high,journal_low,journal_bud,journal_summary_of",
+        "user_id": f"eq.{user_id}",
+        "week": f"in.({','.join(weeks)})",
+    })
+    status, body = http(f"{supabase_url}/rest/v1/journal_entries?{qs}", headers=supabase_headers(secret_key))
+    if status >= 400:
+        raise SystemExit(f"Supabase journal_entries read error {status}: {body}")
+    return {row["week"]: row for row in body}
+
+
+def upsert(supabase_url, secret_key, rows) -> int:
     if not rows:
         return 0
     headers = {
-        "apikey": secret_key,
-        "Authorization": f"Bearer {secret_key}",
+        **supabase_headers(secret_key),
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates,return=minimal",
     }
     endpoint = (
-        f"{supabase_url}/rest/v1/{table}?"
+        f"{supabase_url}/rest/v1/journal_entries?"
         + urlparse.urlencode({"on_conflict": "user_id,week"})
     )
     synced = 0
@@ -226,7 +341,7 @@ def upsert(supabase_url, secret_key, table, rows) -> int:
         chunk = rows[i:i + 100]
         status, body = http(endpoint, method="POST", headers=headers, body=chunk)
         if status >= 400:
-            raise SystemExit(f"Supabase {table} upsert error {status}: {body}")
+            raise SystemExit(f"Supabase journal_entries upsert error {status}: {body}")
         synced += len(chunk)
     return synced
 
@@ -240,6 +355,7 @@ def main():
         help=f"How many recent weeks to re-sync (default {DEFAULT_LOOKBACK_WEEKS})",
     )
     parser.add_argument("--all", action="store_true", help="Sync every week in the database")
+    parser.add_argument("--regenerate", action="store_true", help="Re-summarise even unchanged weeks")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and map, write nothing")
     args = parser.parse_args()
 
@@ -262,38 +378,70 @@ def main():
     scope = "all weeks" if args.all else f"weeks since {since}"
     print(f"\n=== Notion → Supabase journal_entries: {scope} ===")
 
-    rows = fetch_notion_rows(token, database_id, user_id, since)
-    print(f"Fetched {len(rows)} journal pages")
-    if not rows:
-        print("Nothing to sync.")
-        return
+    pages = fetch_pages(token, database_id, since)
+    print(f"Fetched {len(pages)} journal pages; reading page bodies…")
+    synced_at = datetime.now(timezone.utc).isoformat()
+    rows = dedupe_by_week([
+        {
+            "user_id": user_id,
+            "week": page["week"],
+            "notion_page_id": page["id"],
+            "source_updated_at": page["last_edited_time"],
+            "synced_at": synced_at,
+            "journal_raw_text": page_raw_text(token, page["id"]),
+        }
+        for page in pages
+    ])
+    print(f"  {sum(1 for r in rows if r['journal_raw_text'])} of {len(rows)} weeks have journal text")
 
-    narrative = sum(
-        1 for r in rows
-        if any(r[k] for k in ("journal_high", "journal_low", "journal_high_of_week",
-                              "journal_stressors", "journal_bud", "unstructured"))
-    )
-    print(f"  {narrative} of them carry narrative text")
+    existing = fetch_existing(supabase_url, secret_key, user_id, [r["week"] for r in rows])
+    client = make_client()
+
+    generated = adopted = pending = 0
+    for row in rows:
+        prev = existing.get(row["week"]) or {}
+        row["journal_high"] = prev.get("journal_high")
+        row["journal_low"] = prev.get("journal_low")
+        row["journal_bud"] = prev.get("journal_bud")
+        row["journal_summary_of"] = prev.get("journal_summary_of")
+
+        raw = row["journal_raw_text"]
+        if not raw:
+            continue
+        target = text_hash(raw)
+
+        # Summaries that predate this sync (the Notion High / Low properties)
+        # are taken as describing the text as it stands now.
+        if row["journal_summary_of"] is None and (row["journal_high"] or row["journal_low"]) and not args.regenerate:
+            row["journal_summary_of"] = target
+            adopted += 1
+            continue
+
+        if row["journal_summary_of"] == target and not args.regenerate:
+            continue
+        if client is None or args.dry_run:
+            pending += 1
+            continue
+
+        summary = summarize(client, row["week"], raw)
+        if summary:
+            row.update(summary)
+            row["journal_summary_of"] = target
+            generated += 1
+
+    print(f"  Summaries: {generated} generated, {adopted} adopted from Notion, {pending} pending")
 
     if args.dry_run:
-        print("\n--dry-run, writing nothing. Sample:")
-        for row in rows[-3:]:
-            preview = {
-                k: v for k, v in row.items()
-                if k in ("week", "journal_title", "journal_high", "journal_low",
-                         "journal_high_of_week", "journal_stressors", "people_met",
-                         "unstructured") and v
-            }
-            print(f"  {json.dumps(preview, default=str)[:300]}")
+        print("\n--dry-run, writing nothing. Latest week's raw text:")
+        latest = next((r for r in reversed(rows) if r["journal_raw_text"]), None)
+        print(latest["journal_raw_text"][:1200] if latest else "  (none)")
         return
 
-    n_journal = upsert(supabase_url, secret_key, "journal_entries", rows)
-    print(f"Upserted {n_journal} journal_entries rows")
-
+    print(f"Upserted {upsert(supabase_url, secret_key, rows)} journal_entries rows")
     for row in rows[-3:]:
-        bits = [f"{k}={'yes' if row[k] else '—'}" for k in
-                ("journal_high", "journal_low", "journal_high_of_week", "journal_stressors")]
-        print(f"  {row['week']}: " + " ".join(bits))
+        print(f"  {row['week']}: high={'yes' if row['journal_high'] else '—'} "
+              f"low={'yes' if row['journal_low'] else '—'} bud={'yes' if row['journal_bud'] else '—'} "
+              f"raw={len(row['journal_raw_text'] or '')} chars")
 
     print("\n✓ Complete")
 

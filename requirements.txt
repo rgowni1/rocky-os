@@ -2,3 +2,4 @@ requests
 pandas
 pytz
 python-dotenv
+anthropic>=1.0; python_version >= "3.10"
