@@ -1,50 +1,70 @@
 import { MetricCard } from "@/components/MetricCard";
 import { SectionHeader } from "@/components/SectionHeader";
-import { SleepChart, WeightChart } from "@/components/SleepChart";
-import { ActivityMilesChart, TrainingHoursChart } from "@/components/FitnessChart";
-import { FocusChart, PhonePickupsChart } from "@/components/FocusChart";
 import { GoalsSection } from "@/components/GoalsSection";
-import type { MonthlyLog, Goal, TaskSummary } from "@/lib/types";
+import { WordCloud } from "@/components/WordCloud";
+import {
+  SleepQualityChart, SleepHoursChart, WeightChart, BodyFatChart,
+  MilesChart, TrainingHoursChart, ReadingChart, PickupsChart, FocusChart,
+} from "@/components/WeeklyCharts";
+import { fetchWeeklyMetrics, fetchJournalText } from "@/lib/supabase";
+import type { Goal } from "@/lib/types";
 
 const NAV = [
   { label: "Overview", href: "#overview" },
   { label: "Health", href: "#health" },
   { label: "Fitness", href: "#fitness" },
   { label: "Focus", href: "#focus" },
+  { label: "Journal", href: "#journal" },
   { label: "Goals", href: "#goals" },
 ];
 
+/** Monday of the week containing `d`, which is the grain of every weekly table. */
+function mondayOf(d: Date): string {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() - ((copy.getDay() + 6) % 7));
+  return copy.toISOString().slice(0, 10);
+}
+
 async function getData() {
+  const end = mondayOf(new Date());
+  const start = "2023-01-01";
+
+  // Supabase is the source of truth; Notion is downstream of it. Goals are the
+  // one thing with no Supabase equivalent, so they still come from the API route.
   const base = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
-  const [logRes, goalsRes, tasksRes] = await Promise.all([
-    fetch(`${base}/api/log`, { cache: "no-store" }),
-    fetch(`${base}/api/goals`, { cache: "no-store" }),
-    fetch(`${base}/api/tasks`, { cache: "no-store" }),
+  const [weekly, journal, goals] = await Promise.all([
+    fetchWeeklyMetrics(start, end).catch(() => []),
+    fetchJournalText(start, end).catch(() => []),
+    fetch(`${base}/api/goals`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => []) as Promise<Goal[]>,
   ]);
 
-  const logs: MonthlyLog[] = logRes.ok ? await logRes.json() : [];
-  const goals: Goal[] = goalsRes.ok ? await goalsRes.json() : [];
-  const tasks: TaskSummary = tasksRes.ok
-    ? await tasksRes.json()
-    : { total: 0, done: 0, inProgress: 0, notStarted: 0, byPriority: {} };
-
-  return { logs, goals, tasks };
+  return { weekly, journal, goals };
 }
 
 function num(v: number | null | undefined, decimals = 0): number | null {
   if (v === null || v === undefined) return null;
-  return decimals > 0 ? +v.toFixed(decimals) : Math.round(v);
+  return decimals > 0 ? +Number(v).toFixed(decimals) : Math.round(Number(v));
 }
 
 export default async function Page() {
-  const { logs, goals, tasks } = await getData();
+  const { weekly, journal, goals } = await getData();
 
-  const recent = logs.slice(-12);
-  const latest = logs[logs.length - 1] ?? null;
+  // Recharts reads left-to-right, and the fetch is already week-ascending.
+  const recent = weekly.slice(-26);
+  const latest = weekly[weekly.length - 1] ?? null;
+
+  const latestLabel = latest
+    ? new Date(latest.week + "T12:00:00").toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "No data";
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      {/* Header */}
       <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -53,7 +73,7 @@ export default async function Page() {
             </div>
             <span className="font-semibold text-zinc-100 hidden sm:block">Personal Intelligence</span>
           </div>
-          <nav className="flex gap-1">
+          <nav className="flex gap-1 flex-wrap">
             {NAV.map((item) => (
               <a
                 key={item.href}
@@ -64,168 +84,140 @@ export default async function Page() {
               </a>
             ))}
           </nav>
-          <div className="text-xs text-zinc-500">
-            {new Date().toLocaleDateString("en-US", {
-              month: "short",
-              day: "numeric",
-              year: "numeric",
-            })}
-          </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-8 space-y-14">
-        {/* Overview */}
         <section id="overview">
-          <SectionHeader
-            title="This Month"
-            subtitle={
-              latest?.monthOf
-                ? new Date(latest.monthOf + "T00:00:00").toLocaleDateString("en-US", { month: "long", year: "numeric" })
-                : "Latest entry"
-            }
-          />
+          <SectionHeader title="Latest Week" subtitle={`Week of ${latestLabel}`} />
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <MetricCard label="Sleep Score" value={num(latest?.slpScore)} unit="/100" color="emerald" />
-            <MetricCard label="HRV" value={num(latest?.slpHrv)} unit="ms" color="violet" />
-            <MetricCard label="Training" value={num(latest?.loggedTrainingHrs, 1)} unit="hrs" color="orange" />
-            <MetricCard label="Deep Work" value={num(latest?.deepWork)} unit="days" color="sky" />
-            <MetricCard label="Weight" value={num(latest?.weeklyWeight, 1)} unit="lbs" color="amber" />
-            <MetricCard label="Phone Picks" value={num(latest?.totalPhPickUps)} color="rose" />
+            <MetricCard label="Sleep Score" value={num(latest?.slp_score)} unit="/100" color="emerald" />
+            <MetricCard label="Sleep" value={num(latest?.slp_hrs, 1)} unit="hrs" color="sky" />
+            <MetricCard label="HRV" value={num(latest?.slp_hrv)} unit="ms" color="violet" />
+            <MetricCard label="Training" value={num(latest?.training_hrs, 1)} unit="hrs" color="orange" />
+            <MetricCard label="Weight" value={num(latest?.weekly_weight, 1)} unit="lbs" color="amber" />
+            <MetricCard label="Pickups/day" value={num(latest?.avg_daily_pickups)} color="rose" />
           </div>
-
-          {tasks.total > 0 && (
-            <div className="mt-4 grid grid-cols-3 gap-3">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-zinc-100">{tasks.total}</p>
-                <p className="text-xs text-zinc-500 mt-1">Total Tasks</p>
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-violet-400">{tasks.inProgress}</p>
-                <p className="text-xs text-zinc-500 mt-1">In Progress</p>
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-emerald-400">{tasks.done}</p>
-                <p className="text-xs text-zinc-500 mt-1">Done</p>
-              </div>
-            </div>
-          )}
         </section>
 
-        {/* Health & Sleep */}
         <section id="health">
           <SectionHeader
             title="Health & Sleep"
-            subtitle="Sleep quality, heart rate variability, and body composition"
+            subtitle="Sleep quality and body composition, by week"
           />
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <MetricCard label="Sleep Hrs" value={num(latest?.slpHrs, 1)} unit="hrs" color="emerald" />
             <MetricCard label="RHR" value={num(latest?.rhr)} unit="bpm" color="rose" />
-            <MetricCard label="Breath Rate" value={num(latest?.breathRate)} unit="rpm" color="sky" />
-            <MetricCard label="Stress" value={num(latest?.stressLevel)} unit="/10" color="amber" />
+            <MetricCard label="Breath Rate" value={num(latest?.breath_rate, 1)} unit="rpm" color="sky" />
+            <MetricCard label="Sleep Latency" value={num(latest?.slp_latency)} unit="min" color="amber" />
+            <MetricCard label="Body Fat" value={num(latest?.body_fat, 1)} unit="%" color="violet" />
           </div>
-          {recent.length > 0 ? (
+          {recent.length ? (
             <div className="space-y-4">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">
-                  Sleep Score · HRV · RHR (last {recent.length} months)
-                </p>
-                <SleepChart data={recent} />
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">
-                  Weight & Body Fat
-                </p>
-                <WeightChart data={recent} />
+              <Panel title={`Sleep score · HRV · resting HR — last ${recent.length} weeks`}>
+                <SleepQualityChart data={recent} />
+              </Panel>
+              <Panel title="Hours slept">
+                <SleepHoursChart data={recent} />
+              </Panel>
+              <div className="grid md:grid-cols-2 gap-4">
+                <Panel title="Weight (lb)">
+                  <WeightChart data={recent} />
+                </Panel>
+                <Panel title="Body fat (%)">
+                  <BodyFatChart data={recent} />
+                </Panel>
               </div>
             </div>
           ) : (
-            <EmptyState message="No log data yet — add entries to your Notion Log database." />
+            <EmptyState message="No weekly data yet — check that the Oura and journal syncs have run." />
           )}
         </section>
 
-        {/* Fitness */}
         <section id="fitness">
-          <SectionHeader
-            title="Fitness & Activity"
-            subtitle="Monthly mileage, training volume, and movement"
-          />
+          <SectionHeader title="Fitness & Activity" subtitle="Weekly mileage and training volume" />
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <MetricCard label="Run Miles" value={num(latest?.runMiles, 1)} color="emerald" />
-            <MetricCard label="Bike Miles" value={num(latest?.bikeMiles, 1)} color="sky" />
-            <MetricCard label="Swim Yards" value={num(latest?.swimYards)} color="violet" />
+            <MetricCard label="Run Miles" value={num(latest?.run_miles, 1)} color="emerald" />
+            <MetricCard label="Bike Miles" value={num(latest?.bike_miles, 1)} color="sky" />
+            <MetricCard label="Strength" value={num(latest?.strength_mins)} unit="min" color="violet" />
             <MetricCard
-              label="Steps"
-              value={latest?.stepCount ? `${(latest.stepCount / 1000).toFixed(1)}k` : null}
+              label="Steps/day"
+              value={latest?.step_count ? `${(Number(latest.step_count) / 1000).toFixed(1)}k` : null}
               color="orange"
             />
           </div>
-          {recent.length > 0 ? (
+          {recent.length ? (
             <div className="space-y-4">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">
-                  Miles by Activity (Run · Bike · Swim)
-                </p>
-                <ActivityMilesChart data={recent} />
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">
-                  Training Hours & Daily Steps
-                </p>
+              <Panel title="Miles by activity">
+                <MilesChart data={recent} />
+              </Panel>
+              <Panel title="Logged training hours">
                 <TrainingHoursChart data={recent} />
-              </div>
+              </Panel>
             </div>
           ) : (
-            <EmptyState message="No log data yet." />
+            <EmptyState message="No weekly data yet." />
           )}
         </section>
 
-        {/* Focus */}
         <section id="focus">
           <SectionHeader
-            title="Focus & Productivity"
-            subtitle="Deep work sessions, meditation, reading, and screen habits"
+            title="Focus & Attention"
+            subtitle="Uninterrupted work blocks, reading, and screen habits"
           />
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <MetricCard label="Deep Work" value={num(latest?.deepWork)} unit="days" color="violet" />
-            <MetricCard label="Meditation" value={num(latest?.meditationSessions)} unit="sessions" color="emerald" />
-            <MetricCard label="Articles" value={num(latest?.articles)} color="amber" />
-            <MetricCard label="Podcasts/Videos" value={num(latest?.podcastsVideos)} color="sky" />
+            <MetricCard label="Focus Blocks 2h+" value={num(latest?.focus_blocks_2h)} color="violet" />
+            <MetricCard label="Longest Block" value={num(latest?.longest_focus_hrs, 1)} unit="hrs" color="emerald" />
+            <MetricCard label="Highlights" value={num(latest?.highlights)} color="amber" />
+            <MetricCard label="Meditation" value={num(latest?.meditation)} unit="sessions" color="sky" />
           </div>
-          {recent.length > 0 ? (
+          {recent.length ? (
             <div className="space-y-4">
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">
-                  Deep Work · Meditation · Articles
-                </p>
+              <Panel title="Uninterrupted focus blocks, by length">
                 <FocusChart data={recent} />
-              </div>
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">
-                  Monthly Phone Pickups (lower is better)
-                </p>
-                <PhonePickupsChart data={recent} />
-              </div>
+              </Panel>
+              <Panel title="Reading & listening">
+                <ReadingChart data={recent} />
+              </Panel>
+              <Panel title="Average daily phone pickups — lower is better">
+                <PickupsChart data={recent} />
+              </Panel>
             </div>
           ) : (
-            <EmptyState message="No log data yet." />
+            <EmptyState message="No weekly data yet." />
           )}
         </section>
 
-        {/* Goals */}
+        <section id="journal">
+          <SectionHeader title="Journal" subtitle="What the weeks have been about" />
+          {journal.length ? (
+            <WordCloud journal={journal} />
+          ) : (
+            <EmptyState message="No journal text yet — run journal_sync.py." />
+          )}
+        </section>
+
         <section id="goals">
-          <SectionHeader title="Q2 2026 Goals" subtitle="Progress by life category" />
-          {goals.length > 0 ? (
+          <SectionHeader title="Goals" subtitle="Progress by life category" />
+          {goals.length ? (
             <GoalsSection goals={goals} />
           ) : (
-            <EmptyState message="No goals found. Make sure your Goals database is shared with the Notion integration." />
+            <EmptyState message="No goals found. Check the Goals database is shared with the Notion integration." />
           )}
         </section>
       </main>
 
       <footer className="border-t border-zinc-800 mt-16 py-6 text-center text-xs text-zinc-600">
-        Personal Intelligence · Synced from Notion
+        Personal Intelligence · {weekly.length} weeks from Supabase
       </footer>
+    </div>
+  );
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+      <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-4">{title}</p>
+      {children}
     </div>
   );
 }

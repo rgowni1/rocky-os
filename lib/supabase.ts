@@ -62,6 +62,14 @@ export type WeeklyMetricsRow = {
   /** Days behind the Garmin averages; null for weeks served from legacy. */
   garmin_full_days: number | null;
   garmin_partial_days: number | null;
+  /** Uninterrupted calendar gaps of at least N hours in the work day. */
+  focus_blocks_2h: number | null;
+  focus_blocks_3h: number | null;
+  focus_blocks_4h: number | null;
+  longest_focus_hrs: number | null;
+  work_hrs: number | null;
+  work_meetings: number | null;
+  free_workday_hrs: number | null;
 };
 
 /**
