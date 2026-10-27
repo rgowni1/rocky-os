@@ -1,8 +1,14 @@
-name: Nightly Oura Sync
+name: Morning Oura Sync
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # 6:00 AM UTC
+    # 17:00 UTC = 10:00 Pacific (09:00 once DST ends — cron is fixed UTC).
+    #
+    # This used to be 06:00 UTC, which is 23:00 Pacific the *previous evening*:
+    # the job ran before the night it was meant to collect, so the current week
+    # never had a sleep row and every Oura card read "Pending" until the week
+    # was a day old. Running mid-morning means last night is already in Oura.
+    - cron: '0 17 * * *'
   workflow_dispatch:      # Allows manual run
 
 jobs:

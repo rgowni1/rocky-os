@@ -1,11 +1,15 @@
-name: Nightly Readwise Sync
+name: Morning Readwise Sync
 
 on:
   schedule:
-    # 06:20 UTC, twenty minutes behind the Oura nightly. Both push to the
-    # same Notion journal page, on disjoint properties; staggering keeps the
-    # logs readable and avoids two jobs patching that page at once.
-    - cron: '20 6 * * *'
+    # 17:20 UTC, twenty minutes behind the Oura sync. Both push to the same
+    # Notion journal page, on disjoint properties; staggering keeps the logs
+    # readable and avoids two jobs patching that page at once.
+    #
+    # Moved from 06:20 UTC with Oura: highlights are bucketed by Pacific
+    # calendar date, so an evening-Pacific run closed the day before the
+    # evening's reading happened.
+    - cron: '20 17 * * *'
   workflow_dispatch:
 
 permissions:
