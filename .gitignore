@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# vendored MCP server deps — restored by npm ci in CI
+vendor/garmin-mcp/node_modules/

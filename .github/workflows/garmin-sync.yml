@@ -1,0 +1,90 @@
+name: Garmin Sync
+
+# Replaces the launchd job that ran on Rocky's Mac
+# (com.rockygowni.garmin-sync). That needed the machine awake, and when launchd
+# fired it on a maintenance wake the network was not up yet — two runs died
+# outright and one took 30 minutes.
+#
+# The iMessage summary does not come along: osascript needs macOS with an Apple
+# ID signed in, which a runner does not have. The summary is printed to the job
+# log instead.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 06:10 and 22:30 Pacific. GitHub cron is UTC and does NOT follow DST, so
+    # these drift an hour in summer; the sync re-reads a trailing 14-day window
+    # every run, so an hour either way changes nothing.
+    #   14:12 UTC = 06:12 PST / 07:12 PDT  — finalises the day just ended:
+    #     its burn closed at midnight and its meals reach Notion around 05:00
+    #     (measured over 12 days, meals land ~29h after that day's midnight).
+    #   06:32 UTC = 22:32 PST / 23:32 PDT  — the nightly check.
+    - cron: '12 14 * * *'
+    - cron: '32 6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Both schedules write the same rows. Overlap would be harmless (every write
+  # is an idempotent upsert) but serialising keeps the logs readable.
+  group: garmin-sync
+  cancel-in-progress: false
+
+jobs:
+  garmin-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The vendored MCP server is ESM and needs Node 20+.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The vendored bundle keeps its deps external, so it cannot run without
+      # them — this is not an optional optimisation.
+      - name: Install MCP server dependencies
+        run: npm ci --prefix vendor/garmin-mcp --no-audit --no-fund
+
+      - name: Restore Garmin OAuth tokens
+        env:
+          GARMIN_TOKENS: ${{ secrets.GARMIN_TOKENS }}
+        run: |
+          if [ -z "$GARMIN_TOKENS" ]; then
+            echo "::error::GARMIN_TOKENS secret is empty"; exit 1
+          fi
+          mkdir -p "$HOME/.garmin-mcp"
+          printf '%s' "$GARMIN_TOKENS" > "$HOME/.garmin-mcp/tokens.json"
+          chmod 600 "$HOME/.garmin-mcp/tokens.json"
+          python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.garmin-mcp/tokens.json'))); assert d.get('oauth1',{}).get('oauth_token'), 'no oauth1 token'; print('tokens restored, oauth1 present')"
+
+      - name: Sync Garmin → Supabase → Notion
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_JOURNAL_DB_ID: ${{ secrets.NOTION_JOURNAL_DB_ID }}
+          # No .env on a runner; the values above are the source.
+          GARMIN_ENV_FILE: /nonexistent
+          GARMIN_MCP_TOKEN_DIR: /home/runner/.garmin-mcp
+        run: python3 garmin_sync.py
+
+      # The OAuth1 token lasts ~1 year, but if Garmin ever invalidates it the
+      # only fix is `npm run setup` locally with the password and an MFA code —
+      # which cannot happen on a runner. Say so loudly rather than letting the
+      # job fail silently every morning.
+      - name: Explain an auth failure
+        if: failure()
+        run: |
+          echo "::warning::If this failed on Garmin auth, the OAuth1 token has expired or been revoked."
+          echo "Re-run setup on the Mac, then update the GARMIN_TOKENS secret:"
+          echo "  cd ~/garmin-connect-mcp"
+          echo "  read -rs \"pw?Garmin password: \" && GARMIN_EMAIL='...' GARMIN_PASSWORD=\"\$pw\" npm run setup; unset pw"
+          echo "  gh secret set GARMIN_TOKENS -R rgowni1/personal-dashboard < ~/.garmin-mcp/tokens.json"

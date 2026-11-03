@@ -1,0 +1,15 @@
+{
+  "name": "garmin-mcp-vendored",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime deps for the vendored garmin-connect-mcp bundle. Versions are pinned to exactly what upstream pinned when index.js was built — the bundle keeps these external, so a mismatch here is a runtime failure, not a build one.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "axios": "1.18.0",
+    "axios-cookiejar-support": "7.0.0",
+    "oauth-1.0a": "2.2.6",
+    "tough-cookie": "6.0.1",
+    "zod": "3.25.76"
+  }
+}
