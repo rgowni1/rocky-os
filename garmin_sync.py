@@ -93,8 +93,6 @@ ACTIVITY_COLS = [
     "start_stress", "end_stress", "avg_stress", "max_stress", "stress_change",
 ]
 
-STRESS_SAMPLE_COLS = ["measured_at", "calendar_date", "stress", "body_battery"]
-
 MEDITATION_TYPES = {"meditation", "mindfulness", "breathwork"}
 
 
@@ -377,60 +375,6 @@ def fetch(mcp: MCPClient, days: list[str]) -> tuple[list[dict], list[dict]]:
     return daily, acts
 
 
-def fetch_stress_samples(mcp: MCPClient, days: list[str]) -> list[dict]:
-    """All-day stress + body battery at Garmin's native 3-minute cadence.
-
-    garmin_daily keeps the aggregates; this is the curve behind them, covering
-    the whole day rather than only logged activities.
-    """
-    out = []
-    for date in days:
-        s = mcp.call("get_stress", {"date": date}) or {}
-
-        def index_of(descriptors, key_field, idx_field, want):
-            for d in descriptors or []:
-                if d.get(key_field) == want:
-                    return d.get(idx_field)
-            return None
-
-        si = index_of(s.get("stressValueDescriptorsDTOList"), "key", "index", "stressLevel")
-        bt = index_of(s.get("bodyBatteryValueDescriptorsDTOList"),
-                      "bodyBatteryValueDescriptorKey", "bodyBatteryValueDescriptorIndex",
-                      "timestamp")
-        bl = index_of(s.get("bodyBatteryValueDescriptorsDTOList"),
-                      "bodyBatteryValueDescriptorKey", "bodyBatteryValueDescriptorIndex",
-                      "bodyBatteryLevel")
-
-        # Body battery arrives as a parallel array on its own cadence; join on ts.
-        bb_by_ts: dict[int, int] = {}
-        if bt is not None and bl is not None:
-            for row in s.get("bodyBatteryValuesArray") or []:
-                if len(row) > max(bt, bl) and row[bl] is not None:
-                    bb_by_ts[row[bt]] = row[bl]
-
-        kept = 0
-        for row in s.get("stressValuesArray") or []:
-            if si is None or len(row) <= si:
-                continue
-            ts, val = row[0], row[si]
-            # -1 = not worn / insufficient data, -2 = during an activity.
-            # Skip the row entirely: absence means unmeasured.
-            stress = val if isinstance(val, (int, float)) and val >= 0 else None
-            battery = bb_by_ts.get(ts)
-            if stress is None and battery is None:
-                continue
-            out.append({
-                "measured_at": dt.datetime.fromtimestamp(ts / 1000, dt.timezone.utc).isoformat(),
-                "calendar_date": date,
-                "stress": stress,
-                "body_battery": battery,
-            })
-            kept += 1
-        total = len(s.get("stressValuesArray") or [])
-        if total:
-            log(f"  stress {date}: {kept}/{total} slots measured")
-    return out
-
 
 def fetch_samples(mcp: MCPClient, acts: list[dict]) -> list[dict]:
     """Per-second channels for meditation/breathwork sessions.
@@ -524,21 +468,6 @@ values
   {values}
 on conflict (activity_id, offset_seconds) do update set {sets};""")
 
-
-def upsert_stress_samples(rows: list[dict]) -> None:
-    if not rows:
-        return
-    for i in range(0, len(rows), 500):
-        chunk = rows[i:i + 500]
-        values = ",\n  ".join("(" + ",".join(q(r[c]) for c in STRESS_SAMPLE_COLS) + ")"
-                              for r in chunk)
-        run_sql(f"""
-insert into public.garmin_stress_samples ({",".join(STRESS_SAMPLE_COLS)})
-values
-  {values}
-on conflict (user_id, measured_at) do update set
- calendar_date=excluded.calendar_date,stress=excluded.stress,
- body_battery=excluded.body_battery;""")
 
 
 def upsert_activities(rows: list[dict]) -> None:
@@ -774,11 +703,10 @@ def main() -> int:
     try:
         daily, acts = fetch(mcp, days)
         samples = [] if args.no_samples else fetch_samples(mcp, acts)
-        stress = [] if args.no_samples else fetch_stress_samples(mcp, days)
     finally:
         mcp.close()
     log(f"fetched {len(daily)} daily rows, {len(acts)} activities, "
-        f"{len(samples)} session samples, {len(stress)} stress samples")
+        f"{len(samples)} session samples")
     if not daily:
         print("FATAL: no daily rows returned — refusing to continue", file=sys.stderr)
         return 1
@@ -789,16 +717,14 @@ def main() -> int:
             hrv = f", hrv {r['hrv_last_night_avg']}" if r.get("hrv_last_night_avg") else ""
             log(f"  would upsert {r['calendar_date']}: {r['total_kilocalories']} cal, "
                 f"{r['total_steps']} steps{hrv}{flag}")
-        log(f"  would upsert {len(acts)} activities, {len(samples)} session samples, "
-            f"{len(stress)} stress samples")
+        log(f"  would upsert {len(acts)} activities, {len(samples)} session samples")
     else:
         upsert_daily(daily)
         upsert_activities(acts)
         # Must follow activities: samples FK to garmin_activities(activity_id).
         upsert_samples(samples)
-        upsert_stress_samples(stress)
         log(f"upserted {len(daily)} daily rows + {len(acts)} activities "
-            f"+ {len(samples)} session samples + {len(stress)} stress samples")
+            f"+ {len(samples)} session samples")
 
     # Step 5 — Notion (REST API; the Notion MCP server does not exist headlessly).
     if not args.skip_notion:
