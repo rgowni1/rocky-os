@@ -29,6 +29,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Local-Mac defaults, all overridable so the same file runs unchanged in CI.
@@ -95,6 +96,8 @@ ACTIVITY_COLS = [
 
 MEDITATION_TYPES = {"meditation", "mindfulness", "breathwork"}
 
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
 
 def log(msg: str) -> None:
     print(f"[{dt.datetime.now():%H:%M:%S}] {msg}", flush=True)
@@ -103,7 +106,7 @@ def log(msg: str) -> None:
 # --------------------------------------------------------------------------- env
 
 
-REQUIRED_ENV = ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_ACCESS_TOKEN",
+REQUIRED_ENV = ("SUPABASE_URL", "SUPABASE_SECRET_KEY",
                 "NOTION_TOKEN", "NOTION_JOURNAL_DB_ID")
 
 
@@ -138,7 +141,11 @@ def wait_for_network(timeout_s: int = 900) -> bool:
         attempt += 1
         try:
             socket.create_connection(("connectapi.garmin.com", 443), timeout=10).close()
-            socket.create_connection(("api.supabase.com", 443), timeout=10).close()
+            # The project host, not api.supabase.com — the Management API is no
+            # longer on the write path.
+            sb_host = os.environ.get("SUPABASE_URL", "").replace("https://", "").strip("/")
+            if sb_host:
+                socket.create_connection((sb_host, 443), timeout=10).close()
             # A TCP handshake is not enough: on 2026-11-01 connect() succeeded while
             # real requests still hung. Require an actual HTTPS round-trip.
             urllib.request.urlopen("https://connectapi.garmin.com/", timeout=15).close()
@@ -241,34 +248,44 @@ class MCPClient:
 # ---------------------------------------------------------------------- Supabase
 
 
-def run_sql(sql: str) -> list:
-    pat = os.environ.get("SUPABASE_ACCESS_TOKEN")
-    url = os.environ.get("SUPABASE_URL", "")
-    ref = url.replace("https://", "").split(".", 1)[0]
-    if not pat or not ref:
-        die("SUPABASE_ACCESS_TOKEN / SUPABASE_URL missing from .env")
+def _sb():
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    key = os.environ.get("SUPABASE_SECRET_KEY")
+    if not url or not key:
+        die("SUPABASE_URL / SUPABASE_SECRET_KEY missing")
+    return url, key
+
+
+def rpc(fn: str, rows: list[dict]):
+    """Call an upsert function over PostgREST.
+
+    Writes used to go through the Supabase Management API, which needs a
+    Personal Access Token. That token expired twice in eight days and each time
+    it silently broke the scheduled run. SUPABASE_SECRET_KEY does not expire.
+    """
+    url, key = _sb()
+    body = json.dumps({"rows": rows}).encode()
     req = urllib.request.Request(
-        f"https://api.supabase.com/v1/projects/{ref}/database/query",
-        data=json.dumps({"query": sql}).encode(), method="POST",
-        headers={"Authorization": f"Bearer {pat}", "Content-Type": "application/json",
-                 "User-Agent": "garmin-sync/1.0"},
-    )
+        f"{url}/rest/v1/rpc/{fn}", data=body, method="POST",
+        headers={"apikey": key, "Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.read().decode()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"{fn}: HTTP {e.code}: {e.read().decode('utf-8','replace')[:400]}")
+
+
+def query(path: str) -> list:
+    """Read via PostgREST. `path` is everything after /rest/v1/."""
+    url, key = _sb()
+    req = urllib.request.Request(f"{url}/rest/v1/{path}",
+                                 headers={"apikey": key, "Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read() or b"null") or []
+            return json.loads(r.read() or b"[]")
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Supabase SQL {e.code}: {e.read().decode('utf-8','replace')[:400]}")
-
-
-def q(v) -> str:
-    """SQL literal. None -> NULL, strings single-quote-escaped."""
-    if v is None:
-        return "NULL"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, (int, float)):
-        return repr(v)
-    return "'" + str(v).replace("'", "''") + "'"
+        raise RuntimeError(f"query {path}: HTTP {e.code}: {e.read().decode('utf-8','replace')[:300]}")
 
 
 # ------------------------------------------------------------------------ fetch
@@ -428,58 +445,19 @@ def fetch_samples(mcp: MCPClient, acts: list[dict]) -> list[dict]:
 
 
 def upsert_daily(rows: list[dict]) -> None:
-    values = ",\n  ".join("(" + ",".join(q(r[c]) for c in DAILY_COLS) + ")" for r in rows)
-    run_sql(f"""
-insert into public.garmin_daily ({",".join(DAILY_COLS)})
-values
-  {values}
-on conflict (user_id, calendar_date) do update set
- total_kilocalories=excluded.total_kilocalories,total_steps=excluded.total_steps,
- moderate_intensity_minutes=excluded.moderate_intensity_minutes,
- vigorous_intensity_minutes=excluded.vigorous_intensity_minutes,
- avg_stress_level=excluded.avg_stress_level,high_stress_seconds=excluded.high_stress_seconds,
- medium_stress_seconds=excluded.medium_stress_seconds,low_stress_seconds=excluded.low_stress_seconds,
- weight_lbs=coalesce(excluded.weight_lbs, garmin_daily.weight_lbs),
- body_fat_pct=coalesce(excluded.body_fat_pct, garmin_daily.body_fat_pct),
- includes_wellness_data=excluded.includes_wellness_data,
- wellness_end_time_local=excluded.wellness_end_time_local,
- is_partial=excluded.is_partial,
- hrv_last_night_avg=excluded.hrv_last_night_avg,
- hrv_last_night_5min_high=excluded.hrv_last_night_5min_high,
- hrv_weekly_avg=excluded.hrv_weekly_avg,hrv_status=excluded.hrv_status,
- hrv_baseline_low_upper=excluded.hrv_baseline_low_upper,
- hrv_baseline_balanced_low=excluded.hrv_baseline_balanced_low,
- hrv_baseline_balanced_upper=excluded.hrv_baseline_balanced_upper,
- synced_at=now();""")
-
-
-def upsert_samples(rows: list[dict]) -> None:
-    if not rows:
-        return
-    # Chunked: a 90-minute session would otherwise be one enormous statement.
-    for i in range(0, len(rows), 500):
-        chunk = rows[i:i + 500]
-        values = ",\n  ".join("(" + ",".join(q(r[c]) for c in SAMPLE_COLS) + ")" for r in chunk)
-        sets = ",".join(f"{c}=excluded.{c}" for c in SAMPLE_COLS
-                        if c not in ("activity_id", "offset_seconds"))
-        run_sql(f"""
-insert into public.garmin_activity_samples ({",".join(SAMPLE_COLS)})
-values
-  {values}
-on conflict (activity_id, offset_seconds) do update set {sets};""")
+    rpc("garmin_upsert_daily", rows)
 
 
 
 def upsert_activities(rows: list[dict]) -> None:
-    if not rows:
-        return
-    values = ",\n  ".join("(" + ",".join(q(r[c]) for c in ACTIVITY_COLS) + ")" for r in rows)
-    sets = ",".join(f"{c}=excluded.{c}" for c in ACTIVITY_COLS if c != "activity_id")
-    run_sql(f"""
-insert into public.garmin_activities ({",".join(ACTIVITY_COLS)})
-values
-  {values}
-on conflict (activity_id) do update set {sets},synced_at=now();""")
+    if rows:
+        rpc("garmin_upsert_activities", rows)
+
+
+def upsert_samples(rows: list[dict]) -> None:
+    # Chunked: a long session would otherwise be one very large request body.
+    for i in range(0, len(rows), 500):
+        rpc("garmin_upsert_samples", rows[i:i + 500])
 
 
 # ---------------------------------------------------------------------- summary
@@ -493,17 +471,27 @@ def fetch_intake(start: str, end: str) -> dict[str, dict]:
     closes the night before rather than opening the next day. Honours
     eaten_at_override for the same reason food_weekly does.
     """
-    rows = run_sql(f"""
-select ((coalesce(eaten_at_override, eaten_at) at time zone 'America/Los_Angeles')
-         - interval '4 hours')::date::text as d,
-       round(sum(calories))  as cals,
-       round(sum(protein_g)) as protein,
-       count(*)              as meals
-from public.food_log_entries
-where coalesce(eaten_at_override, eaten_at) >= '{start}'::date - 1
-  and coalesce(eaten_at_override, eaten_at) <  '{end}'::date + 2
-group by 1;""")
-    return {r["d"]: r for r in rows}
+    rows = query(
+        "food_log_entries"
+        "?select=calories,protein_g,eaten_at,eaten_at_override"
+        f"&or=(eaten_at.gte.{start},eaten_at_override.gte.{start})"
+        f"&eaten_at=lt.{end}T23:59:59")
+    out: dict[str, dict] = {}
+    for r in rows:
+        raw = r.get("eaten_at_override") or r.get("eaten_at")
+        if not raw:
+            continue
+        ts = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        local = ts.astimezone(PACIFIC)
+        # 04:00-03:59 eating day, matching food_weekly and the widget.
+        day = (local - dt.timedelta(hours=4)).date().isoformat()
+        acc = out.setdefault(day, {"d": day, "cals": 0, "protein": 0, "meals": 0})
+        acc["cals"] += r.get("calories") or 0
+        acc["protein"] += r.get("protein_g") or 0
+        acc["meals"] += 1
+    for v in out.values():
+        v["cals"] = round(v["cals"]); v["protein"] = round(v["protein"])
+    return out
 
 
 def pick_comparison_day(daily: list[dict], intake: dict[str, dict], today: str):
@@ -743,7 +731,7 @@ def main() -> int:
             log(f"  ! notion update failed: {(r.stderr or '').strip()[:200]}")
 
     # Step 6 — summary.
-    week_rows = run_sql(f"select * from public.garmin_weekly where week_start = '{monday}';")
+    week_rows = query(f"garmin_weekly?select=*&week_start=eq.{monday}")
     week = week_rows[0] if week_rows else None
     latest = daily[-1]
     latest_acts = [a for a in acts if (a["start_time_local"] or "")[:10] == latest["calendar_date"]]

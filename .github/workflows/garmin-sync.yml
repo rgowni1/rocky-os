@@ -67,8 +67,10 @@ jobs:
       - name: Sync Garmin → Supabase → Notion
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # Writes go through PostgREST RPCs with this key. The Management API
+          # PAT is deliberately absent: it expired twice in eight days and took
+          # the scheduled run down with it each time.
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_JOURNAL_DB_ID: ${{ secrets.NOTION_JOURNAL_DB_ID }}
           # No .env on a runner; the values above are the source.
