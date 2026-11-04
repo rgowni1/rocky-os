@@ -68,6 +68,10 @@ DAILY_COLS = [
     "hrv_last_night_avg", "hrv_last_night_5min_high", "hrv_weekly_avg",
     "hrv_status", "hrv_baseline_low_upper", "hrv_baseline_balanced_low",
     "hrv_baseline_balanced_upper",
+    # All-day respiration. Already present on get_daily_summary, so these cost
+    # no extra call. Distinct from the per-second session samples, which cover
+    # meditation and breathwork only.
+    "resp_waking_avg", "resp_sleep_avg", "resp_lowest", "resp_highest",
 ]
 
 SAMPLE_COLS = [
@@ -342,6 +346,10 @@ def fetch(mcp: MCPClient, days: list[str]) -> tuple[list[dict], list[dict]]:
             # any BMR Garmin adds after the watch came off.
             "is_partial": bool(o.get("includesWellnessData")) and wet is not None
                           and wet < f"{date}T{PARTIAL_CUTOFF}",
+            "resp_waking_avg": o.get("avgWakingRespirationValue"),
+            "resp_sleep_avg": o.get("avgSleepRespirationValue"),
+            "resp_lowest": o.get("lowestRespirationValue"),
+            "resp_highest": o.get("highestRespirationValue"),
         }
 
         # Overnight HRV. Separate endpoint — the daily summary doesn't carry it.
