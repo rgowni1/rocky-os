@@ -682,7 +682,11 @@ def main() -> int:
 
     # Dates computed locally — never derived by a model, and never via a
     # toLocaleString/toISOString round-trip (that shifted the window a day on 10-27).
-    today = dt.date.today()
+    # Pacific, not the host clock. Garmin reports wellnessEndTimeLocal and
+    # startTimeLocal in local time, and the GitHub runner is UTC — at 06:08 UTC
+    # it read "today" as Nov 4 while Pacific was still Nov 3, shifting the whole
+    # window a day and silently dropping a session.
+    today = dt.datetime.now(PACIFIC).date()
     days = [(today - dt.timedelta(days=k)).isoformat() for k in range(args.days - 1, -1, -1)]
     monday = (today - dt.timedelta(days=today.weekday())).isoformat()
     log(f"window {days[0]} .. {days[-1]}  week_monday={monday}  dry_run={args.dry_run}")
