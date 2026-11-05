@@ -10,17 +10,25 @@ name: Garmin Sync
 # log instead.
 
 on:
+  # Schedules disabled 2026-11-05. Garmin rate-limits the runner: egress
+  # 52.252.244.221 (Azure), Cloudflare in front, and the MCP server gets
+  # "Request failed with status code 429" on every call. The same token works
+  # from a residential IP seconds later, so this is not auth.
+  #
+  # GitHub runners share Azure ranges with the whole platform, so Garmin sees
+  # the aggregate and throttles the range -- two runs a day was never going to
+  # be the deciding factor, and there is no amount of backing off that fixes it
+  # from our side.
+  #
+  # The launchd job on the Mac (com.rockygowni.garmin-sync, 06:10 and 22:30
+  # Pacific) is the live path and has kept Supabase current throughout.
+  #
+  # workflow_dispatch is kept so this can be re-tested occasionally -- if the
+  # throttle is transient, re-enable the two crons below.
   workflow_dispatch:
-  schedule:
-    # 06:10 and 22:30 Pacific. GitHub cron is UTC and does NOT follow DST, so
-    # these drift an hour in summer; the sync re-reads a trailing 14-day window
-    # every run, so an hour either way changes nothing.
-    #   14:12 UTC = 06:12 PST / 07:12 PDT  — finalises the day just ended:
-    #     its burn closed at midnight and its meals reach Notion around 05:00
-    #     (measured over 12 days, meals land ~29h after that day's midnight).
-    #   06:32 UTC = 22:32 PST / 23:32 PDT  — the nightly check.
-    - cron: '12 14 * * *'
-    - cron: '32 6 * * *'
+  # schedule:
+  #   - cron: '12 14 * * *'
+  #   - cron: '32 6 * * *'
 
 permissions:
   contents: read
