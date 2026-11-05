@@ -24,7 +24,7 @@ jobs:
       - run: npm ci --prefix vendor/garmin-mcp --no-audit --no-fund
 
       - name: Runner egress IP
-        run: curl -s --max-time 20 https://api.ipify.org || echo "(ipify unreachable)"
+        run: echo "egress IP = $(curl -s --max-time 20 https://api.ipify.org || echo unknown)"
 
       - name: Raw reachability of Garmin hosts
         run: |
@@ -47,7 +47,7 @@ jobs:
             console.log("oauth1 present:", !!(t.oauth1&&t.oauth1.oauth_token));
             console.log("oauth2 present:", !!tok, "expires_at:", t.oauth2&&t.oauth2.expires_at,
                         "now:", Math.floor(Date.now()/1000));
-            if(!tok) return;
+            if(!tok) { console.log("no oauth2 token in secret"); process.exit(0); }
             fetch("https://connectapi.garmin.com/usersummary-service/usersummary/daily/9211dffb-3a5b-4be2-86b6-30bfa95d3147?calendarDate=2026-11-03",
               {headers:{Authorization:"Bearer "+tok,"User-Agent":"com.garmin.android.apps.connectmobile"}})
               .then(async r=>{
