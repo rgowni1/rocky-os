@@ -4898,6 +4898,11 @@
           _label: map[k]._label,
           slp_score: avgOf(rows, 'slp_score'), slp_hrs: avgOf(rows, 'slp_hrs'),
           slp_hrv:   avgOf(rows, 'slp_hrv'),   rhr:      avgOf(rows, 'rhr'),
+          // Minutes after local midnight, pre-wrapped by weekly_master so a
+          // period mixing 23:40 and 00:20 bedtimes averages to midnight rather
+          // than to the middle of the following day.
+          avg_sleep_time_mins: avgOf(rows, 'avg_sleep_time_mins'),
+          avg_wake_time_mins:  avgOf(rows, 'avg_wake_time_mins'),
           resp_waking_avg: avgOf(rows, 'resp_waking_avg'), breath_rate: avgOf(rows, 'breath_rate'),
           training_hrs:   sumOf(rows, 'training_hrs'),
           intensity_mins: sumOf(rows, 'intensity_mins'),
@@ -5072,6 +5077,7 @@
       // night is entirely one device's, never a blend of the two.
       slp_score:'Oura + Garmin → sleep_weekly', slp_hrs:'Oura + Garmin → sleep_weekly',
       avg_sleep_time:'Oura + Garmin → sleep_weekly', avg_wake_time:'Oura + Garmin → sleep_weekly',
+      avg_sleep_time_mins:'Oura + Garmin → sleep_weekly', avg_wake_time_mins:'Oura + Garmin → sleep_weekly',
       slp_hrv:'Oura + Garmin → sleep_weekly', rhr:'Oura + Garmin → sleep_weekly',
       slp_latency:'Oura → sleep_weekly (no Garmin equivalent)',
       resp_waking_avg:'Garmin MCP → Supabase', breath_rate:'Oura → Supabase',
@@ -5368,6 +5374,8 @@
         <div class="bi-grid">
           ${chartCard('Sleep score', 'Overall sleep quality', 'slp_score', 'var(--viz-sleep)', v=>Math.round(v), false, 'score', SLEEP_SCORE_TARGET)}
           ${chartCard('Sleep duration', 'Average hours per night', 'slp_hrs', 'var(--viz-sleep)', v=>(+v).toFixed(1), false, 'hours', SLEEP_HRS_TARGET)}
+          ${chartCard('Bedtime', 'Average time asleep', 'avg_sleep_time_mins', 'var(--viz-sleep)', v=>formatClock(v), false)}
+          ${chartCard('Wake time', 'Average time awake', 'avg_wake_time_mins', 'var(--viz-sleep)', v=>formatClock(v), false)}
           ${chartCard('Heart-rate variability', 'Higher generally signals recovery', 'slp_hrv', 'var(--viz-sleep)', v=>Math.round(v), false, 'ms', HRV_TARGET)}
           ${chartCard('Resting heart rate', 'Lower can indicate better recovery', 'rhr', 'var(--viz-sleep)', v=>Math.round(v), false, 'bpm', RHR_TARGET, null, true)}
           ${chartCard('Waking respiration', 'Garmin all-day average while awake', 'resp_waking_avg', 'var(--viz-sleep)', v=>(+v).toFixed(1), false, 'brpm', null, null, true)}
