@@ -5047,6 +5047,17 @@
       return `${hour24 % 12 || 12}:${String(minute).padStart(2, '0')} ${period}`;
     };
     const currentSleepTime = formatClock(timeToMinutes(currentWeek.avg_sleep_time));
+    const currentWakeTime = formatClock(timeToMinutes(currentWeek.avg_wake_time));
+    // Which device(s) the week's nights came from, and how many nights are
+    // actually behind the averages. A week averaged over 3 nights used to be
+    // indistinguishable from one averaged over 7.
+    const nightsNote = (row) => {
+      if (!row || row.nights == null) return '';
+      const parts = [`${row.nights} night${row.nights === 1 ? '' : 's'}`];
+      if (row.sleep_source === 'mixed') parts.push(`${row.nights_oura} Oura · ${row.nights_garmin} Garmin`);
+      else if (row.sleep_source === 'garmin') parts.push('Garmin');
+      return parts.join(' · ');
+    };
     const wkLbl = e => { const d = parseLocalDate(e.week); return `${d.getMonth()+1}/${d.getDate()}`; };
     const previousWith = (key, current) => [...entries].reverse().find(e => e !== current && e[key] != null);
     const priorWeekSub = (key, fmt, empty = 'No prior week yet') => {
@@ -5056,8 +5067,13 @@
     };
 
     const sourceByKey = {
-      slp_score:'oura.py → Notion', slp_hrs:'oura.py → Notion', avg_sleep_time:'oura.py → Notion',
-      slp_hrv:'oura.py → Notion', rhr:'oura.py → Notion',
+      // Sleep is merged across both wearables by the sleep_weekly view: Oura is
+      // primary, Garmin fills nights the ring missed. Whole nights only — a
+      // night is entirely one device's, never a blend of the two.
+      slp_score:'Oura + Garmin → sleep_weekly', slp_hrs:'Oura + Garmin → sleep_weekly',
+      avg_sleep_time:'Oura + Garmin → sleep_weekly', avg_wake_time:'Oura + Garmin → sleep_weekly',
+      slp_hrv:'Oura + Garmin → sleep_weekly', rhr:'Oura + Garmin → sleep_weekly',
+      slp_latency:'Oura → sleep_weekly (no Garmin equivalent)',
       resp_waking_avg:'Garmin MCP → Supabase', breath_rate:'Oura → Supabase',
       intensity_mins:'Garmin MCP → Supabase', weekly_weight:'Garmin MCP → Supabase',
       strength_mins:'Garmin MCP → Supabase',
@@ -5084,8 +5100,8 @@
       if (!prev || prev[key] == null) return `<span class="bi-delta" data-tooltip="Comparison|No previous logged week" title="No previous logged week">First reading</span>`;
       const weekRange = `${wkLbl(prev)}→${wkLbl(current)}`;
 
-      // Clock fields (avg sleep time) compare in minutes, not as numeric strings.
-      if (key === 'avg_sleep_time') {
+      // Clock fields (avg sleep/wake time) compare in minutes, not as numeric strings.
+      if (key === 'avg_sleep_time' || key === 'avg_wake_time') {
         const currMins = timeToMinutes(current[key]);
         const prevMins = timeToMinutes(prev[key]);
         if (currMins == null || prevMins == null) {
@@ -5097,10 +5113,12 @@
         const comparison = `Week of ${wkLbl(prev)}|${prevClock} → ${currClock}`;
         const title = `Compared with previous logged week (${wkLbl(prev)}): ${prevClock} → ${currClock}`;
         if (Math.abs(d) < 8) return `<span class="bi-delta" data-tooltip="${escapeHtml(comparison)}" title="${escapeHtml(title)}">→ steady · ${weekRange}</span>`;
-        // Later bedtime is usually worse for this metric.
-        const good = d < 0;
+        // Later bedtime is usually worse for this metric. Wake time gets no
+        // verdict: waking earlier is only better if you also went to bed
+        // earlier, which slp_hrs already says more directly.
         const mins = Math.abs(Math.round(d));
-        return `<span class="bi-delta ${good?'good':'bad'}" data-tooltip="${escapeHtml(comparison)}" title="${escapeHtml(title)}">${d>0?'↑':'↓'} ${mins}m · ${weekRange}</span>`;
+        const tone = key === 'avg_wake_time' ? '' : (d < 0 ? ' good' : ' bad');
+        return `<span class="bi-delta${tone}" data-tooltip="${escapeHtml(comparison)}" title="${escapeHtml(title)}">${d>0?'↑':'↓'} ${mins}m · ${weekRange}</span>`;
       }
 
       const d = current[key] - prev[key];
@@ -5112,13 +5130,14 @@
       const shown = Math.abs(d) >= 10 ? Math.round(Math.abs(d)) : Math.abs(d).toFixed(1);
       return `<span class="bi-delta ${good?'good':'bad'}" data-tooltip="${escapeHtml(comparison)}" title="${escapeHtml(title)}">${d>0?'↑':'↓'} ${shown}${suffix} · ${weekRange}</span>`;
     };
-    const card = ({label, key, current, value, unit='', sub, color, inverse=false, suffix='', comparisonLabel=''}) => `
+    const card = ({label, key, current, value, unit='', sub, color, inverse=false, suffix='', comparisonLabel='', note=''}) => `
       <div class="bi-summary-card" style="--metric:${color}">
         <div class="bi-summary-top"><div class="bi-summary-label">${label}</div>${comparisonLabel
           ? `<span class="bi-delta" data-tooltip="Context|${escapeHtml(comparisonLabel)}" title="${escapeHtml(comparisonLabel)}">Note</span>`
           : delta(key, current, inverse, suffix, unit)}</div>
         <div class="bi-summary-value">${value}<span class="bi-summary-unit">${unit}</span></div>
         <div class="bi-summary-sub">${current && current.week ? `Week of ${wkLbl(current)} · ` : ''}${sub}</div>
+        ${note ? `<div class="bi-summary-sub">${escapeHtml(note)}</div>` : ''}
         <div class="bi-summary-source">Source · ${sourceFor(key)}</div>
       </div>`;
 
@@ -5263,7 +5282,7 @@
             <div class="bi-kicker">Personal intelligence</div>
             <h2>Health, in perspective.</h2>
             <p class="subtitle">A clear view of recovery, training, body, and habits—so the signal is easier to spot than the noise.</p>
-            <div class="bi-updated">Current journal week · ${entries.at(-1) ? wkLbl(entries.at(-1)) : 'No entries yet'}${currentWeek.slp_score == null ? ' · Oura sleep data pending' : ''}</div>
+            <div class="bi-updated">Current journal week · ${entries.at(-1) ? wkLbl(entries.at(-1)) : 'No entries yet'}${!currentWeek.nights ? ' · no sleep recorded yet this week on either wearable' : ''}</div>
             <div class="bi-freshness${age?.stale ? ' stale' : ''}">
               <span class="bi-dot" aria-hidden="true"></span>
               <span>${age ? `Synced ${escapeHtml(age.label)}` : 'Sync time unknown'}${age?.stale ? ' · behind schedule' : ''}</span>
@@ -5296,11 +5315,12 @@
         </div>
 
         <div class="bi-summary-grid">
-          ${card({label:'Sleep score', key:'slp_score', current:currentWeek, value:currentWeek.slp_score!=null?fmtInt(currentWeek.slp_score):'Pending', sub:priorWeekSub('slp_score', fmtInt), color:'var(--viz-sleep)'})}
-          ${card({label:'Sleep duration', key:'slp_hrs', current:currentWeek, value:currentWeek.slp_hrs!=null?fmt1(currentWeek.slp_hrs):'Pending', unit:currentWeek.slp_hrs!=null?'hours':'', sub:priorWeekSub('slp_hrs', v => `${fmt1(v)} hours`), color:'var(--viz-sleep)'})}
-          ${card({label:'Average sleep time', key:'avg_sleep_time', current:currentWeek, value:currentSleepTime||'Pending', sub:priorWeekSub('avg_sleep_time', v => formatClock(timeToMinutes(v)) || v, 'No prior bedtime yet'), color:'var(--viz-sleep)'})}
-          ${card({label:'HRV', key:'slp_hrv', current:currentWeek, value:currentWeek.slp_hrv!=null?fmtInt(currentWeek.slp_hrv):'Pending', unit:currentWeek.slp_hrv!=null?'ms':'', sub:priorWeekSub('slp_hrv', v => `${fmtInt(v)} ms`, 'No recovery history'), color:'var(--viz-sleep)'})}
-          ${card({label:'Resting heart rate', key:'rhr', current:currentWeek, value:currentWeek.rhr!=null?fmtInt(currentWeek.rhr):'Pending', unit:currentWeek.rhr!=null?'bpm':'', sub:priorWeekSub('rhr', v => `${fmtInt(v)} bpm`, 'No heart-rate history'), color:'var(--viz-sleep)', inverse:true})}
+          ${card({label:'Sleep score', key:'slp_score', current:currentWeek, value:currentWeek.slp_score!=null?fmtInt(currentWeek.slp_score):'Pending', sub:priorWeekSub('slp_score', fmtInt), color:'var(--viz-sleep)', note:nightsNote(currentWeek)})}
+          ${card({label:'Sleep duration', key:'slp_hrs', current:currentWeek, value:currentWeek.slp_hrs!=null?fmt1(currentWeek.slp_hrs):'Pending', unit:currentWeek.slp_hrs!=null?'hours':'', sub:priorWeekSub('slp_hrs', v => `${fmt1(v)} hours`), color:'var(--viz-sleep)', note:nightsNote(currentWeek)})}
+          ${card({label:'Average sleep time', key:'avg_sleep_time', current:currentWeek, value:currentSleepTime||'Pending', sub:priorWeekSub('avg_sleep_time', v => formatClock(timeToMinutes(v)) || v, 'No prior bedtime yet'), color:'var(--viz-sleep)', note:nightsNote(currentWeek)})}
+          ${card({label:'Average wake time', key:'avg_wake_time', current:currentWeek, value:currentWakeTime||'Pending', sub:priorWeekSub('avg_wake_time', v => formatClock(timeToMinutes(v)) || v, 'No prior wake time yet'), color:'var(--viz-sleep)', note:nightsNote(currentWeek)})}
+          ${card({label:'HRV', key:'slp_hrv', current:currentWeek, value:currentWeek.slp_hrv!=null?fmtInt(currentWeek.slp_hrv):'Pending', unit:currentWeek.slp_hrv!=null?'ms':'', sub:priorWeekSub('slp_hrv', v => `${fmtInt(v)} ms`, 'No recovery history'), color:'var(--viz-sleep)', note:nightsNote(currentWeek)})}
+          ${card({label:'Resting heart rate', key:'rhr', current:currentWeek, value:currentWeek.rhr!=null?fmtInt(currentWeek.rhr):'Pending', unit:currentWeek.rhr!=null?'bpm':'', sub:priorWeekSub('rhr', v => `${fmtInt(v)} bpm`, 'No heart-rate history'), color:'var(--viz-sleep)', inverse:true, note:nightsNote(currentWeek)})}
           ${card({label:'Stress', key:'stress', current:latestStress, value:latestStress?fmtInt(latestStress.stress):'—', unit:'/ 100', sub:'Lower is better', color:'var(--viz-mind)', inverse:true})}
           ${card({label:'Weight', key:'weekly_weight', current:latestBody, value:latestBody?fmt1(latestBody.weekly_weight):'—', unit:'lbs', sub:latestBody?.body_fat?`${fmt1(latestBody.body_fat)}% body fat`:'Latest body reading', color:'var(--viz-body)', inverse:true, suffix:' lb'})}
           ${card({label:'Calories consumed', key:'consumed_cals', current:latestFood, value:latestFood?fmtInt(latestFood.consumed_cals):'Not logged', unit:latestFood?'kcal':'', sub:latestFood?`direct from Notion “Consumed Cals”`:'Add nutrition data to your journal', color:'var(--viz-fuel)'})}
