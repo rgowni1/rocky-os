@@ -265,6 +265,14 @@ def upsert_oura_daily(supabase_url, secret_key, user_id, rows: list[dict]) -> in
 
 
 def fetch_oura_weekly(supabase_url, secret_key, user_id, week_start: date, week_end: date) -> list[dict]:
+    """Weekly sleep rollup for the Notion consumer.
+
+    Reads sleep_weekly, not oura_weekly: Garmin now fills nights the ring
+    missed and the dashboard reads the merged view, so pointing Notion at the
+    Oura-only rollup would make the two disagree on any week with a device
+    switch. sleep_weekly exposes the same column names, plus nights_oura /
+    nights_garmin.
+    """
     headers = {
         "apikey": secret_key,
         "Authorization": f"Bearer {secret_key}",
@@ -277,9 +285,9 @@ def fetch_oura_weekly(supabase_url, secret_key, user_id, week_start: date, week_
         f"&order=week_start.asc"
         f"&select=*"
     )
-    status, body = http(f"{supabase_url}/rest/v1/oura_weekly?{qs}", headers=headers)
+    status, body = http(f"{supabase_url}/rest/v1/sleep_weekly?{qs}", headers=headers)
     if status >= 400:
-        raise SystemExit(f"Supabase oura_weekly read error {status}: {body}")
+        raise SystemExit(f"Supabase sleep_weekly read error {status}: {body}")
     return body or []
 
 
@@ -427,7 +435,8 @@ def main():
             f"score={week.get('slp_score')} hrs={week.get('slp_hrs')} "
             f"hrv={week.get('slp_hrv')} rhr={week.get('rhr')} "
             f"sleep={week.get('avg_sleep_time')} wake={week.get('avg_wake_time')} "
-            f"nights={week.get('nights')}"
+            f"nights={week.get('nights')} "
+            f"({week.get('nights_oura')} oura/{week.get('nights_garmin')} garmin)"
         )
     print("\n✓ Complete")
 

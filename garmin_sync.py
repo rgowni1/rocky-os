@@ -72,7 +72,30 @@ DAILY_COLS = [
     # no extra call. Distinct from the per-second session samples, which cover
     # meditation and breathwork only.
     "resp_waking_avg", "resp_sleep_avg", "resp_lowest", "resp_highest",
+    # min_heart_rate is the analog of Oura's lowest_heart_rate, and the one
+    # sleep_daily merges on. The sleep payload's own avgHeartRate is a
+    # sleep-window MEAN and reads ~8bpm high (2026-08-03: Oura lowest 55,
+    # Garmin avgHeartRate 63, Garmin minHeartRate 54) — never substitute it.
+    "min_heart_rate", "resting_heart_rate",
 ]
+
+# Overnight sleep, upserted to garmin_sleep_daily and merged behind Oura by the
+# sleep_daily view. Garmin's calendarDate names the morning of waking, matching
+# Oura's `day`, so the two tables join directly on calendar_date.
+SLEEP_COLS = [
+    "calendar_date", "sleep_score", "total_sleep_hours",
+    "average_breath", "lowest_breath", "highest_breath",
+    "avg_heart_rate", "avg_sleep_stress", "awake_count",
+    "deep_sleep_seconds", "light_sleep_seconds", "rem_sleep_seconds",
+    "awake_sleep_seconds", "nap_seconds",
+    "sleep_time", "wake_time", "sleep_time_mins", "wake_time_mins",
+    "bedtime_start", "bedtime_end", "sleep_window_confirmed",
+    "garmin_sleep_id", "raw",
+]
+# Same floor oura_weekly uses, so a short half-worn night can't drag a weekly
+# mean down. Garmin reports naps separately in napTimeSeconds, but a 45-minute
+# "sleep" (2026-11-07) would otherwise read as a night.
+MIN_SLEEP_HOURS = 3
 
 SAMPLE_COLS = [
     "activity_id", "offset_seconds", "timestamp_gmt", "heart_rate",
@@ -350,6 +373,8 @@ def fetch(mcp: MCPClient, days: list[str]) -> tuple[list[dict], list[dict]]:
             "resp_sleep_avg": o.get("avgSleepRespirationValue"),
             "resp_lowest": o.get("lowestRespirationValue"),
             "resp_highest": o.get("highestRespirationValue"),
+            "min_heart_rate": o.get("minHeartRate"),
+            "resting_heart_rate": o.get("restingHeartRate"),
         }
 
         # Overnight HRV. Separate endpoint — the daily summary doesn't carry it.
@@ -399,6 +424,95 @@ def fetch(mcp: MCPClient, days: list[str]) -> tuple[list[dict], list[dict]]:
         })
     return daily, acts
 
+
+
+def _garmin_wall_clock(ms: int) -> dt.datetime:
+    """Garmin's *TimestampLocal fields are epoch-millis already shifted by the
+    UTC offset, so reading them AS UTC gives the local wall clock. Verified on
+    2026-10-06: GMT 05:49:26 / Local 22:49:26 the previous evening, offset 7h.
+    Converting them with a real timezone would double-apply the offset."""
+    return dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).replace(tzinfo=None)
+
+
+def _mins_after_midnight(when: dt.datetime, *, sleep_wrap: bool) -> int:
+    """Minutes after local midnight. Bedtimes before 06:00 are pushed to +1440
+    so a week mixing 23:40 and 00:20 averages to midnight rather than noon.
+    Mirrors oura.py exactly — the two feed the same weekly average."""
+    mins = when.hour * 60 + when.minute
+    if sleep_wrap and when.hour < 6:
+        mins += 1440
+    return mins
+
+
+def fetch_sleep(mcp: MCPClient, days: list[str]) -> list[dict]:
+    """Overnight sleep per day. One call per date — get_sleep_data takes no
+    range. Days the watch wasn't worn return a DTO full of nulls, which is the
+    common case here (Oura is the primary sleep device); those are skipped so
+    the table holds only real nights."""
+    rows = []
+    for date in days:
+        r = mcp.call("get_sleep_data", {"date": date})
+        dto = (r or {}).get("dailySleepDTO") or {}
+        secs = dto.get("sleepTimeSeconds")
+        if not secs:
+            continue
+        hours = round(secs / 3600, 2)
+        if hours < MIN_SLEEP_HOURS:
+            log(f"  - {date}: garmin sleep {hours}h below {MIN_SLEEP_HOURS}h floor, skipping")
+            continue
+
+        sleep_time = wake_time = None
+        sleep_mins = wake_mins = None
+        bedtime_start = bedtime_end = None
+        s_local, e_local = dto.get("sleepStartTimestampLocal"), dto.get("sleepEndTimestampLocal")
+        s_gmt, e_gmt = dto.get("sleepStartTimestampGMT"), dto.get("sleepEndTimestampGMT")
+        if s_local and e_local:
+            start, end = _garmin_wall_clock(s_local), _garmin_wall_clock(e_local)
+            sleep_time = f"{start.hour:02d}:{start.minute:02d}"
+            wake_time = f"{end.hour:02d}:{end.minute:02d}"
+            # Garmin reports no sleep latency, so its bedtime is the window
+            # start where Oura's is onset (start + latency). On the one night
+            # both devices recorded, that difference is minutes, not hours.
+            sleep_mins = _mins_after_midnight(start, sleep_wrap=True)
+            wake_mins = _mins_after_midnight(end, sleep_wrap=False)
+        if s_gmt and e_gmt:
+            bedtime_start = dt.datetime.fromtimestamp(s_gmt / 1000, dt.timezone.utc).isoformat()
+            bedtime_end = dt.datetime.fromtimestamp(e_gmt / 1000, dt.timezone.utc).isoformat()
+
+        scores = dto.get("sleepScores") or {}
+        rows.append({
+            "calendar_date": date,
+            "sleep_score": (scores.get("overall") or {}).get("value"),
+            "total_sleep_hours": hours,
+            "average_breath": dto.get("averageRespirationValue"),
+            "lowest_breath": dto.get("lowestRespirationValue"),
+            "highest_breath": dto.get("highestRespirationValue"),
+            "avg_heart_rate": dto.get("avgHeartRate"),
+            "avg_sleep_stress": dto.get("avgSleepStress"),
+            "awake_count": dto.get("awakeCount"),
+            "deep_sleep_seconds": dto.get("deepSleepSeconds"),
+            "light_sleep_seconds": dto.get("lightSleepSeconds"),
+            "rem_sleep_seconds": dto.get("remSleepSeconds"),
+            "awake_sleep_seconds": dto.get("awakeSleepSeconds"),
+            "nap_seconds": dto.get("napTimeSeconds"),
+            "sleep_time": sleep_time,
+            "wake_time": wake_time,
+            "sleep_time_mins": sleep_mins,
+            "wake_time_mins": wake_mins,
+            "bedtime_start": bedtime_start,
+            "bedtime_end": bedtime_end,
+            "sleep_window_confirmed": dto.get("sleepWindowConfirmed"),
+            "garmin_sleep_id": str(dto["id"]) if dto.get("id") is not None else None,
+            "raw": {
+                "day": date,
+                "sleep_time_seconds": secs,
+                "sleep_scores": scores,
+                "sleep_window_confirmation_type": dto.get("sleepWindowConfirmationType"),
+                "sleep_from_device": dto.get("sleepFromDevice"),
+                "retro": dto.get("retro"),
+            },
+        })
+    return rows
 
 
 def fetch_samples(mcp: MCPClient, acts: list[dict]) -> list[dict]:
@@ -454,6 +568,11 @@ def fetch_samples(mcp: MCPClient, acts: list[dict]) -> list[dict]:
 
 def upsert_daily(rows: list[dict]) -> None:
     rpc("garmin_upsert_daily", rows)
+
+
+def upsert_sleep(rows: list[dict]) -> None:
+    if rows:
+        rpc("garmin_upsert_sleep", rows)
 
 
 
@@ -605,10 +724,21 @@ def compose_summary(day: dict, acts: list[dict], week: dict | None, today: str,
         if gap >= 1:
             lines += ["", f"⚠️ No wellness data since {label} — sync your watch"]
     elif day.get("is_partial") and not thin_today:
-        # Only worth saying when today is actually on screen. The 06:10 run
-        # suppresses that block, and "today is partial" at 6am is noise.
+        # Only complain when the watch is genuinely behind, not merely because
+        # the day has not ended. Scheduled runs land ~3h earlier than the plist
+        # asks for (cause not identified), so any fixed clock threshold flags
+        # every evening. Comparing against the actual run time survives that.
         wet = (day.get("wellness_end_time_local") or "")[11:16]
-        lines += ["", f"⚠️ Watch last synced {wet} — today is partial, excluded from averages"]
+        gap_min = None
+        raw = day.get("wellness_end_time_local")
+        if raw:
+            try:
+                ended = dt.datetime.fromisoformat(raw.replace("T", " ")[:19])
+                gap_min = (dt.datetime.now(PACIFIC).replace(tzinfo=None) - ended).total_seconds() / 60
+            except ValueError:
+                pass
+        if gap_min is not None and gap_min > 180:
+            lines += ["", f"⚠️ Watch last synced {wet}, {gap_min/60:.1f}h ago — sync your watch"]
 
     if week:
         lines += ["", "📊 Week to date (Mon–Sun)"]
@@ -672,6 +802,25 @@ def send_imessage(text: str) -> bool:
 # --------------------------------------------------------------------------- main
 
 
+FAILURE_MARKER = os.path.expanduser("~/.garmin-mcp/last-failure")
+
+
+def take_pending_failure() -> str | None:
+    """Read and clear a failure recorded by an earlier run.
+
+    A failed run cannot reliably tell anyone: at 03:21 the screen is locked and
+    Messages refuses to start, which is how 2026-11-06 went unnoticed. run.sh
+    writes a marker instead and the next successful run reports it.
+    """
+    try:
+        with open(FAILURE_MARKER) as f:
+            note = f.read().strip()
+        os.remove(FAILURE_MARKER)
+        return note or None
+    except OSError:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -680,6 +829,8 @@ def main() -> int:
     ap.add_argument("--skip-notion", action="store_true")
     ap.add_argument("--no-samples", action="store_true",
                     help="skip per-second meditation/breathwork session samples")
+    ap.add_argument("--no-sleep", action="store_true",
+                    help="skip overnight sleep (one get_sleep_data call per day)")
     args = ap.parse_args()
 
     load_env()
@@ -702,11 +853,12 @@ def main() -> int:
     mcp = MCPClient(MCP_SERVER)
     try:
         daily, acts = fetch(mcp, days)
+        sleep = [] if args.no_sleep else fetch_sleep(mcp, days)
         samples = [] if args.no_samples else fetch_samples(mcp, acts)
     finally:
         mcp.close()
-    log(f"fetched {len(daily)} daily rows, {len(acts)} activities, "
-        f"{len(samples)} session samples")
+    log(f"fetched {len(daily)} daily rows, {len(sleep)} sleep nights, "
+        f"{len(acts)} activities, {len(samples)} session samples")
     if not daily:
         print("FATAL: no daily rows returned — refusing to continue", file=sys.stderr)
         return 1
@@ -717,14 +869,20 @@ def main() -> int:
             hrv = f", hrv {r['hrv_last_night_avg']}" if r.get("hrv_last_night_avg") else ""
             log(f"  would upsert {r['calendar_date']}: {r['total_kilocalories']} cal, "
                 f"{r['total_steps']} steps{hrv}{flag}")
+        for s in sleep:
+            log(f"  would upsert sleep {s['calendar_date']}: {s['total_sleep_hours']}h, "
+                f"{s['sleep_time']}->{s['wake_time']}, score {s['sleep_score']}")
         log(f"  would upsert {len(acts)} activities, {len(samples)} session samples")
     else:
         upsert_daily(daily)
+        # Must follow daily: sleep_daily reads HRV and min_heart_rate from
+        # garmin_daily for the same date to complete a Garmin night.
+        upsert_sleep(sleep)
         upsert_activities(acts)
         # Must follow activities: samples FK to garmin_activities(activity_id).
         upsert_samples(samples)
-        log(f"upserted {len(daily)} daily rows + {len(acts)} activities "
-            f"+ {len(samples)} session samples")
+        log(f"upserted {len(daily)} daily rows + {len(sleep)} sleep nights "
+            f"+ {len(acts)} activities + {len(samples)} session samples")
 
     # Step 5 — Notion (REST API; the Notion MCP server does not exist headlessly).
     if not args.skip_notion:
@@ -759,6 +917,10 @@ def main() -> int:
                 if cmp_day else [])
     summary = compose_summary(latest, latest_acts, week, today.isoformat(),
                               cmp_day, cmp_intake, cmp_acts)
+    pending = take_pending_failure()
+    if pending:
+        log(f"reporting earlier failure: {pending}")
+        summary += f"\n\n⚠️ An earlier run failed and could not notify:\n{pending}"
 
     print("\n----- summary -----\n" + summary + "\n-------------------\n", flush=True)
     if args.dry_run or args.no_notify:
