@@ -795,7 +795,15 @@ def send_imessage(text: str) -> bool:
     except Exception as e:
         # Messages.app cannot be driven on a locked screen (AppleEvent -1712).
         # Never let a failed *notification* masquerade as a failed *sync*.
-        log(f"  ! iMessage failed ({type(e).__name__}) — summary preserved in log")
+        #
+        # Log osascript's own stderr. capture_output swallows it, and without
+        # it every cause collapses into the same "CalledProcessError" line:
+        # -1712 (screen locked) and -1743 (Automation permission revoked) want
+        # opposite fixes, and for eleven days running there was no way to tell
+        # which one was happening.
+        detail = (getattr(e, "stderr", "") or "").strip().replace("\n", " ")
+        log(f"  ! iMessage failed ({type(e).__name__}) — summary preserved in log"
+            + (f": {detail[:200]}" if detail else ""))
         return False
 
 
