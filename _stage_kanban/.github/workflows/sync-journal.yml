@@ -1,0 +1,32 @@
+name: Sync journal to Supabase
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every three hours. A once-daily sync was fine when the dashboard was the
+    # only consumer, but the Scriptable widget is meant to nudge *during* the
+    # day and is only ever as fresh as the last run. Public repos get unlimited
+    # Actions minutes, and the sync is idempotent, so the extra runs cost
+    # nothing but a few seconds of Notion API traffic.
+    - cron: "17 */3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync Notion journal
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_JOURNAL_DB_ID: ${{ secrets.NOTION_JOURNAL_DB_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          KANBAN_USER_ID: ${{ secrets.KANBAN_USER_ID }}
+        run: python3 sync_journal_to_supabase.py
