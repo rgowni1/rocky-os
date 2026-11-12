@@ -453,8 +453,8 @@ def main():
     if missing:
         sys.exit(f"Missing environment variables: {', '.join(missing)}")
 
-    # Food log only. journal_entries is owned by personal-dashboard's
-    # journal_sync.py (reflections), and the weekly food numbers — including
+    # Food log only. journal_entries is owned by sync/journal_sync.py
+    # (reflections), and the weekly food numbers — including
     # meal timing and cooked counts — are now the food_weekly view over the
     # rows written here, so nothing weekly is computed in this script any more.
     print("Fetching food log entries from Notion...", flush=True)

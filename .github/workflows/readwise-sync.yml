@@ -1,4 +1,4 @@
-name: Morning Readwise Sync
+name: Readwise Sync
 
 on:
   schedule:
@@ -27,7 +27,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r sync/requirements.txt
 
       - name: Sync Readwise → Supabase → Notion
         env:
@@ -37,4 +37,4 @@ jobs:
           KANBAN_USER_ID: ${{ secrets.KANBAN_USER_ID }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-        run: python readwise_sync.py
+        run: python sync/readwise_sync.py

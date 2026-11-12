@@ -1,4 +1,4 @@
-name: Morning Oura Sync
+name: Oura Sync
 
 on:
   schedule:
@@ -26,8 +26,11 @@ on:
     - cron: '23 19 * * *'
   workflow_dispatch:      # Allows manual run
 
+permissions:
+  contents: read
+
 jobs:
-  run-script:
+  oura-sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +42,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r sync/requirements.txt
 
-      - name: Run script
+      - name: Sync Oura → Supabase → Notion
         env:
           # Oura → Supabase (source of truth)
           OURA_ACCESS_TOKEN: ${{ secrets.OURA_ACCESS_TOKEN }}
@@ -52,4 +55,4 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           READWISE_API_TOKEN: ${{ secrets.READWISE_API_TOKEN }}
-        run: python oura.py
+        run: python sync/oura.py

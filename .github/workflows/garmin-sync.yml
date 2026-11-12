@@ -58,7 +58,7 @@ jobs:
       # The vendored bundle keeps its deps external, so it cannot run without
       # them — this is not an optional optimisation.
       - name: Install MCP server dependencies
-        run: npm ci --prefix vendor/garmin-mcp --no-audit --no-fund
+        run: npm ci --prefix sync/vendor/garmin-mcp --no-audit --no-fund
 
       - name: Restore Garmin OAuth tokens
         env:
@@ -84,7 +84,7 @@ jobs:
           # No .env on a runner; the values above are the source.
           GARMIN_ENV_FILE: /nonexistent
           GARMIN_MCP_TOKEN_DIR: /home/runner/.garmin-mcp
-        run: python3 garmin_sync.py
+        run: python3 sync/garmin_sync.py
 
       # The OAuth1 token lasts ~1 year, but if Garmin ever invalidates it the
       # only fix is `npm run setup` locally with the password and an MFA code —
@@ -97,4 +97,4 @@ jobs:
           echo "Re-run setup on the Mac, then update the GARMIN_TOKENS secret:"
           echo "  cd ~/garmin-connect-mcp"
           echo "  read -rs \"pw?Garmin password: \" && GARMIN_EMAIL='...' GARMIN_PASSWORD=\"\$pw\" npm run setup; unset pw"
-          echo "  gh secret set GARMIN_TOKENS -R rgowni1/personal-dashboard < ~/.garmin-mcp/tokens.json"
+          echo "  gh secret set GARMIN_TOKENS -R rgowni1/rocky-os < ~/.garmin-mcp/tokens.json"

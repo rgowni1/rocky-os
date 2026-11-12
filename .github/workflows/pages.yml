@@ -1,0 +1,48 @@
+name: Deploy Dashboard to Pages
+
+# kanban served index.html straight off the branch root via the legacy
+# "deploy from branch" setting. The dashboard now lives in web/, and branch
+# deploys can only publish the repo root or /docs — so this publishes web/ as
+# an artifact instead. Pages must be set to "GitHub Actions" as its source
+# (Settings > Pages > Build and deployment > Source), or this deploy step
+# fails with "Not Found".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  # Never let an older push overtake a newer one on the live site. Unlike the
+  # syncs, a superseded deploy has no value, so cancelling is the right call.
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      # Only web/ ships. The sync layer, tools and .env.example stay out of the
+      # published site even though the repo itself is public.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

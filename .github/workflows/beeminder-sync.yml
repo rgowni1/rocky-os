@@ -1,4 +1,4 @@
-name: Beeminder Sync (Weekly)
+name: Beeminder Sync
 
 on:
   schedule:
@@ -14,6 +14,9 @@ on:
           - this
           - previous
 
+permissions:
+  contents: read
+
 jobs:
   beeminder-sync:
     runs-on: ubuntu-latest
@@ -27,7 +30,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r sync/requirements.txt
 
       - name: Sync Notion → Beeminder
         env:
@@ -35,4 +38,4 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           BEEMINDER_USERNAME: ${{ secrets.BEEMINDER_USERNAME }}
           BEEMINDER_AUTH_TOKEN: ${{ secrets.BEEMINDER_AUTH_TOKEN }}
-        run: python beeminder_sync.py ${{ github.event_name == 'workflow_dispatch' && inputs.week || 'this' }}
+        run: python sync/beeminder_sync.py ${{ github.event_name == 'workflow_dispatch' && inputs.week || 'this' }}

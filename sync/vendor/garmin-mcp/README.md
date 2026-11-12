@@ -12,7 +12,7 @@ repo is patched (see `src/garmin/auth.ts` — the CSRF and ticket regexes are th
 fragile part), rebuild there and re-copy:
 
     cd ~/garmin-connect-mcp && npm run build
-    cp dist/index.js ~/workspace/personal-dashboard/vendor/garmin-mcp/index.js
+    cp dist/index.js ~/workspace/rocky-os/sync/vendor/garmin-mcp/index.js
 
 Verify it only talks to Garmin:
 
