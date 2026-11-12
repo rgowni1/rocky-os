@@ -22,13 +22,13 @@ Auth: Supabase email+password (single user). Anon publishable key is committed t
 | `index.html` | Static SPA. Supabase JS client, 5-column board, detail drawer, filter toolbar. Open directly or serve with `python3 -m http.server`. |
 | `mcp_server.py` | stdio MCP server. Tools: `create_task`, `list_tasks`, `update_task`, `move_task`, `delete_task`, `weekly_stats`. Calls Supabase REST with the secret key from `.env`. |
 | `.mcp.json` | Wires `mcp_server.py` as the `kanban` MCP server for Claude Code in this directory. |
-| `run_sql.py` | Runs arbitrary SQL via Supabase Management API. Uses `SUPABASE_ACCESS_TOKEN` from `.env`. |
+| `run_sql.py` | Runs arbitrary SQL straight against Postgres via `psycopg2`. Uses `SUPABASE_DB_URL` (session-pooler URI) from `.env`. Takes whole migration files on stdin — multiple statements run in one transaction. |
 | `set_password.py` | One-shot admin-API call to set the kanban user's password. |
 | `sync_journal_to_supabase.py` | Idempotent Notion Logging Journal → Supabase sync. Also syncs individual meals and derives weekly meal timing. Used locally and by GitHub Actions. |
 | `scriptable/agentos-food.js` | iOS Scriptable home-screen widget. Reads the current week's meals straight from Supabase (password grant, credentials in the iOS keychain) and frames them as budget remaining. Read-only. |
 | `supabase/migrations/` | Checked-in database migrations, including the authenticated `journal_entries` table and RLS policy. |
 | `server.py` | **Legacy.** Notion-backed REST server on port 5173. Personal Intelligence no longer depends on it after the journal migration. |
-| `.env` | Secrets (gitignored): `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `KANBAN_USER_ID`, `SUPABASE_ACCESS_TOKEN`, plus legacy Notion vars. |
+| `.env` | Secrets (gitignored): `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_DB_URL`, `KANBAN_USER_ID`, plus legacy Notion vars. |
 
 ## Schema (`tasks`)
 
@@ -146,6 +146,8 @@ python3 set_password.py
 
 - **Never extend `server.py`.** New backend logic goes into `mcp_server.py` (for Claude write-paths) or `index.html` (for UI).
 - **MCP tool changes need a Claude Code reload** to take effect — the server is spawned at session start.
-- **Don't echo `SUPABASE_SECRET_KEY` or `SUPABASE_ACCESS_TOKEN`** in chat or commits. They live only in `.env`.
+- **Don't echo `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL`** in chat or commits. They live only in `.env`.
+- **Use the session-pooler URI, not the direct one.** `db.<ref>.supabase.co` publishes only an AAAA record since Supabase deprecated IPv4, and this Mac has no global IPv6 address, so the direct URI cannot connect. The pooler has IPv4.
+- **`SUPABASE_ACCESS_TOKEN` is gone.** The Management API needed a PAT that expired three times, twice inside eight days, each time silently breaking whatever was mid-flight. A database password does not expire.
 - **Frontend is fully static** — no build step, no bundler. Edit `index.html` and refresh the browser.
 - **Schema changes**: write the SQL **into `supabase/migrations/`**, apply it with `python3 run_sql.py < supabase/migrations/<file>.sql`, update `mcp_server.py` field lists, update `index.html` (rowToTask / patchToRow / drawer / badges / filters) in the same commit. `non_profile_meals` and `dcp_meals` were added with an ad-hoc `run_sql.py` call and exist in the database but in no migration file — don't add to that drift.
