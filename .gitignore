@@ -1,0 +1,23 @@
+# Secrets — mirrored as GitHub Actions secrets, never committed.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node (vendored MCP server deps — restored by npm ci in CI)
+node_modules/
+sync/vendor/garmin-mcp/node_modules/
+
+# Garmin OAuth token cache written by garth
+.garmin-tokens/
+
+# Local tooling
+.claude/
+tasks.json
+.DS_Store
+*.pem

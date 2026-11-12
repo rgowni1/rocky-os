@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rocky-os": {
+      "command": "python3",
+      "args": ["mcp/mcp_server.py"]
+    }
+  }
+}
