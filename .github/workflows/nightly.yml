@@ -2,13 +2,28 @@ name: Morning Oura Sync
 
 on:
   schedule:
-    # 17:00 UTC = 10:00 Pacific (09:00 once DST ends — cron is fixed UTC).
+    # Weekdays 08:23 Pacific, then a daily 11:23 backup. Cron is fixed UTC,
+    # so both shift an hour later (09:23 / 12:23) once DST starts.
     #
-    # This used to be 06:00 UTC, which is 23:00 Pacific the *previous evening*:
-    # the job ran before the night it was meant to collect, so the current week
-    # never had a sleep row and every Oura card read "Pending" until the week
-    # was a day old. Running mid-morning means last night is already in Oura.
-    - cron: '0 17 * * *'
+    # The weekday run is the one timed to a workday wake-up. The 11:23 run is
+    # the backstop, and it runs every day because weekend wake-ups are late
+    # enough that an 08:23 pull would miss the night entirely — on Sat/Sun it
+    # is the only pass that happens.
+    #
+    # Why two, and why the odd minute: GitHub runs scheduled workflows on a
+    # best-effort queue, and ours were landing 4–7.5h after their slot — a
+    # single 17:00 UTC cron was executing early afternoon Pacific. Top-of-hour
+    # slots are the most contended, so ':23' queues sooner than ':00', and the
+    # later cron backstops the first when it still slips. Redundancy is free:
+    # the Supabase write is an upsert and the script re-reads a 14-day window,
+    # so a duplicate run costs ~35s and changes nothing.
+    #
+    # Don't move these earlier than ~13:00 UTC. This used to be 06:00 UTC,
+    # which is 23:00 Pacific the *previous evening*: the job ran before the
+    # night it was meant to collect, so the current week never had a sleep
+    # row and every Oura card read "Pending" until the week was a day old.
+    - cron: '23 16 * * 1-5'
+    - cron: '23 19 * * *'
   workflow_dispatch:      # Allows manual run
 
 jobs:
