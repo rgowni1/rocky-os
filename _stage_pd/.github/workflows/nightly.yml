@@ -1,0 +1,55 @@
+name: Morning Oura Sync
+
+on:
+  schedule:
+    # Weekdays 08:23 Pacific, then a daily 11:23 backup. Cron is fixed UTC,
+    # so both shift an hour later (09:23 / 12:23) once DST starts.
+    #
+    # The weekday run is the one timed to a workday wake-up. The 11:23 run is
+    # the backstop, and it runs every day because weekend wake-ups are late
+    # enough that an 08:23 pull would miss the night entirely — on Sat/Sun it
+    # is the only pass that happens.
+    #
+    # Why two, and why the odd minute: GitHub runs scheduled workflows on a
+    # best-effort queue, and ours were landing 4–7.5h after their slot — a
+    # single 17:00 UTC cron was executing early afternoon Pacific. Top-of-hour
+    # slots are the most contended, so ':23' queues sooner than ':00', and the
+    # later cron backstops the first when it still slips. Redundancy is free:
+    # the Supabase write is an upsert and the script re-reads a 14-day window,
+    # so a duplicate run costs ~35s and changes nothing.
+    #
+    # Don't move these earlier than ~13:00 UTC. This used to be 06:00 UTC,
+    # which is 23:00 Pacific the *previous evening*: the job ran before the
+    # night it was meant to collect, so the current week never had a sleep
+    # row and every Oura card read "Pending" until the week was a day old.
+    - cron: '23 16 * * 1-5'
+    - cron: '23 19 * * *'
+  workflow_dispatch:      # Allows manual run
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          # Oura → Supabase (source of truth)
+          OURA_ACCESS_TOKEN: ${{ secrets.OURA_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          KANBAN_USER_ID: ${{ secrets.KANBAN_USER_ID }}
+          # Consumers of Supabase
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          READWISE_API_TOKEN: ${{ secrets.READWISE_API_TOKEN }}
+        run: python oura.py

@@ -1,0 +1,42 @@
+name: Weekly Journal Sync
+
+on:
+  schedule:
+    # 07:10 UTC Monday = 00:10 Pacific Monday — just after the journal week
+    # closes, so the week being read is complete and its High / Low / Bud are
+    # summarised from the finished text.
+    - cron: '10 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      weeks:
+        description: "How many recent weeks to re-sync"
+        required: false
+        default: "4"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  journal-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync Notion journal → Supabase
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          KANBAN_USER_ID: ${{ secrets.KANBAN_USER_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python journal_sync.py --weeks ${{ github.event_name == 'workflow_dispatch' && inputs.weeks || '4' }}
