@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""garmin-sync — Garmin Connect -> Supabase -> Notion -> iMessage, deterministically.
+"""garmin-sync — Garmin Connect -> Supabase -> Notion -> Notification Center.
 
 This replaces the agentic (`claude -p`) version of steps 1-4 and 6. It drives the
 same `garmin` MCP server over stdio, using the same OAuth tokens in ~/.garmin-mcp/,
@@ -7,7 +7,7 @@ and writes the same SQL. No model in the loop, no Anthropic API dependency.
 
     python3 sync.py                 # full run
     python3 sync.py --dry-run       # fetch + report, write nothing, send nothing
-    python3 sync.py --no-notify     # run normally but skip the iMessage
+    python3 sync.py --no-notify     # run normally but post no notification
     python3 sync.py --days 30       # widen the backfill window (default 14)
     python3 sync.py --no-samples    # skip per-second session samples
 
@@ -40,13 +40,19 @@ MCP_SERVER = os.environ.get(
     if os.path.exists(os.path.join(HERE, "vendor", "garmin-mcp", "index.js"))
     else os.path.expanduser("~/garmin-connect-mcp/dist/index.js"))
 TOKEN_DIR = os.environ.get("GARMIN_MCP_TOKEN_DIR", os.path.expanduser("~/.garmin-mcp"))
-IMESSAGE_TO = os.environ.get("GARMIN_IMESSAGE_TO", "+16465057208")
+# imessage.sh is left vendored but unused: notifications now go to
+# Notification Center, which does not need an unlocked screen.
 # Per-MCP-call ceiling. A Garmin call hung ~30min on 2026-11-01 right after
 # a maintenance wake; the whole run should take ~12s.
 RPC_TIMEOUT_S = 45.0
-# A same-day wellness reading before this clock time means the watch stopped
-# syncing mid-day; at or after it the day is treated as finished. Tied to the
-# 22:30 nightly run — raise both together if the schedule moves earlier.
+# A same-day wellness reading before this clock time means the day is not over
+# yet; at or after it the day is treated as finished.
+#
+# This used to be tied to a fixed 22:30 nightly run. The schedule is now a
+# 6-hour StartInterval, so runs land at arbitrary clock times and a mid-day run
+# will legitimately mark today partial — which is correct, and the next run
+# backfills the final total. The cutoff is a statement about the data ("the
+# watch reported past 22:00, so the day is done"), not about the schedule.
 PARTIAL_CUTOFF = "22:00:00.0"
 
 # Wellness columns: never write 0 when the source is null (the watch may simply
@@ -780,29 +786,55 @@ def compose_summary(day: dict, acts: list[dict], week: dict | None, today: str,
     return "\n".join(lines)
 
 
-def send_imessage(text: str) -> bool:
+def notify(summary: str) -> bool:
+    """Post the summary to Notification Center.
+
+    Replaces the iMessage send, which failed on every run from 2026-10-30
+    onward. launchd fires this job on wake rather than at the scheduled time
+    (the Mac is asleep at both 22:30 and 06:10), so it consistently ran
+    against a locked screen, and Messages.app cannot be driven there. The
+    sync kept exiting 0 while the notification silently went nowhere -- which
+    is how a watch that had stopped uploading for three days went unnoticed.
+
+    display notification does not need an unlocked screen: anything posted
+    while locked queues and is waiting in Notification Center on unlock.
+    """
     if sys.platform != "darwin":
-        log("  not macOS — summary is in the log above, no iMessage")
+        log("  not macOS — summary is in the log above")
         return False
-    if not os.path.exists(os.path.join(HERE, "imessage.sh")):
-        log("  imessage.sh not present — summary is in the log above")
-        return False
+
+    # A notification is a banner, not a transcript. Lead with the warning when
+    # there is one -- that is the whole reason to look -- and keep the full
+    # summary in the log, which is the only complete record either way.
+    lines = [ln.strip() for ln in summary.splitlines() if ln.strip()]
+    title = lines[0] if lines else "Garmin sync"
+    warning = next((ln for ln in lines if ln.startswith("⚠️")), "")
+    stats = next((ln for ln in lines if ln.startswith("• Cals")), "")
+    subtitle = warning or stats
+    body = stats if warning else " · ".join(lines[1:3])
+
+    def esc(s):  # AppleScript string literal
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    script = (f'display notification "{esc(body)}" '
+              f'with title "{esc(title)}" subtitle "{esc(subtitle)}"')
     try:
-        subprocess.run([os.path.join(HERE, "imessage.sh"), IMESSAGE_TO],
-                       input=text, text=True, check=True, timeout=120,
-                       capture_output=True)
+        subprocess.run(["osascript", "-e", script],
+                       check=True, timeout=30, capture_output=True, text=True)
+        # Logged on success too. Silence used to mean "delivered", which is
+        # indistinguishable from "never ran" when you are reading back a log
+        # to work out why you heard nothing for eleven days.
+        log(f"  notification posted: {subtitle or title}")
         return True
     except Exception as e:
-        # Messages.app cannot be driven on a locked screen (AppleEvent -1712).
         # Never let a failed *notification* masquerade as a failed *sync*.
         #
         # Log osascript's own stderr. capture_output swallows it, and without
-        # it every cause collapses into the same "CalledProcessError" line:
-        # -1712 (screen locked) and -1743 (Automation permission revoked) want
-        # opposite fixes, and for eleven days running there was no way to tell
-        # which one was happening.
+        # it every cause collapses into the same bare "CalledProcessError"
+        # line -- which is exactly why the iMessage breakage took eleven days
+        # and a manual investigation to characterise.
         detail = (getattr(e, "stderr", "") or "").strip().replace("\n", " ")
-        log(f"  ! iMessage failed ({type(e).__name__}) — summary preserved in log"
+        log(f"  ! notification failed ({type(e).__name__}) — summary preserved in log"
             + (f": {detail[:200]}" if detail else ""))
         return False
 
@@ -934,7 +966,7 @@ def main() -> int:
     if args.dry_run or args.no_notify:
         log("notification skipped")
     else:
-        send_imessage(summary)
+        notify(summary)
 
     log("done")
     return 0
