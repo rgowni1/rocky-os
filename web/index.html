@@ -4172,7 +4172,10 @@
   // === Personal Stats (Journal BI) ===
   let _journalData = null;
   let _journalFetch = null;
-  let _biPeriod = 'month';
+  // Weekly by default: the journal and every sync write at week grain, so this
+  // is the only period that shows real readings rather than averages of them.
+  // Month and quarter roll those up and are a deliberate zoom-out.
+  let _biPeriod = 'week';
   // How many periods the charts show. "Last 16 weeks" was a hardcoded window;
   // the useful span depends on the question — four weeks to see whether this
   // month moved, a year to see whether anything actually changed. Kept per
@@ -5340,24 +5343,6 @@
           <div class="bi-insight"><div class="bi-insight-icon">↗</div><div><strong>Strength trajectory</strong><span>${strengthMove == null ? 'Needs eight recent and eight prior logged strength weeks.' : `${fmtInt(recentStrengthAvg)} minutes per week across the latest 8 logged weeks vs ${fmtInt(priorStrengthAvg)} over the prior 8 (${Math.abs(strengthMove)}% ${strengthMove>=0?'higher':'lower'}) · goal ${STRENGTH_TARGET}.`}</span></div></div>
         </div>
 
-        <div class="bi-section-heading"><h3>Journal word cloud</h3><p>Themes from weekly High / Low notes in the Logging Journal</p></div>
-        <div class="bi-cloud-controls">
-          <span class="bi-cloud-sub" style="margin:0;color:var(--muted);font-size:12px">${escapeHtml(cloudWin.label)}</span>
-          <div class="bi-toggle">${cloudToggle}</div>
-        </div>
-        <div class="bi-cloud-row">
-          <div class="bi-cloud-card">
-            <h4>Highs</h4>
-            <p class="bi-cloud-sub">Energizers and wins</p>
-            ${renderWordCloudHtml(highWords, 'highs')}
-          </div>
-          <div class="bi-cloud-card">
-            <h4>Lows</h4>
-            <p class="bi-cloud-sub">Stressors and friction</p>
-            ${renderWordCloudHtml(lowWords, 'lows')}
-          </div>
-        </div>
-
         <div class="bi-period-row">
           <div class="bi-period-copy"><strong>Explore the trends</strong><span>Week and month show trajectories; quarter compares period totals and averages.</span></div>
           <div class="bi-period-controls">
@@ -5421,6 +5406,25 @@
           ${chartCard(`${isAgg?'Total articles':'Articles'}`, 'Written learning output', 'articles', 'var(--viz-mind)', v=>Math.round(v), true, 'articles')}
           ${chartCard(`${isAgg?'Total podcasts & videos':'Podcasts & videos'}`, 'Audio and video learning', 'podcasts', 'var(--viz-mind)', v=>Math.round(v), true, 'items')}
           </div>
+
+          <div class="bi-section-heading"><h3>Journal word cloud</h3><p>Themes from weekly High / Low notes in the Logging Journal</p></div>
+          <div class="bi-cloud-controls">
+            <span class="bi-cloud-sub" style="margin:0;color:var(--muted);font-size:12px">${escapeHtml(cloudWin.label)}</span>
+            <div class="bi-toggle">${cloudToggle}</div>
+          </div>
+          <div class="bi-cloud-row">
+            <div class="bi-cloud-card">
+              <h4>Highs</h4>
+              <p class="bi-cloud-sub">Energizers and wins</p>
+              ${renderWordCloudHtml(highWords, 'highs')}
+            </div>
+            <div class="bi-cloud-card">
+              <h4>Lows</h4>
+              <p class="bi-cloud-sub">Stressors and friction</p>
+              ${renderWordCloudHtml(lowWords, 'lows')}
+            </div>
+          </div>
+
           <div class="bi-tooltip" role="tooltip"><strong></strong><span></span></div>
         </div>
     `;
