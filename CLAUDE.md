@@ -204,6 +204,38 @@ write a fix upstream. Instead:
 An edit shows immediately in the drill-down (computed client-side) and reaches
 the weekly charts on the next sync.
 
+## Schema
+
+`supabase/migrations/20261112000000_baseline.sql` is the entire schema, dumped
+from the live database. The pre-merge migration files in `supabase/archive/`
+are history only — **do not replay them**; see `supabase/README.md` for why.
+
+14 tables, 13 views. `weekly_master` is the dashboard's single read surface:
+one row per user per week, every metric resolved from its live source with
+`legacy_notion_table` as the fallback for weeks predating that source's own
+table.
+
+Three things in the database that no repo documented before the merge, all now
+captured in the baseline:
+
+- **A `pg_cron` job runs every Monday 08:00 UTC**, calling
+  `weekly_today_rollover()`. That function looks for `timing IN
+  ('today','tomorrow')`, values the CHECK constraint no longer permits, so it
+  matches zero rows every week. Harmless, but it is dead.
+- **`food_log_entries_guard_client_update` has drifted.** It pins the synced
+  columns against browser writes, but `drinks`, `has_creatine` and
+  `has_pumpkin_seeds` were added to the table afterwards and are not in the pin
+  list. An authenticated client can currently overwrite all three, and the sync
+  writes them. Add them when you next touch that trigger.
+- **`rocket_money_transactions` has an `anon can insert` policy with
+  `check (true)`.** Anyone holding the anon key — which is committed in
+  `web/index.html` — can insert arbitrary rows. There is no matching select
+  policy so they can't read anything back, but the write is open.
+
+RLS is the only thing protecting this data: Supabase's stock grants give `anon`
+and `authenticated` full privileges on everything in `public`, and the policies
+do the gating. **A new table without RLS enabled is public.**
+
 ## Secrets
 
 `.env` at the repo root, gitignored, 20 keys. `.env.example` lists the names.
