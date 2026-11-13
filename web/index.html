@@ -4914,6 +4914,7 @@
           // the target line to mean anything.
           strength_mins:  avgOf(rows, 'strength_mins'),
           run_miles:  sumOf(rows, 'run_miles'), bike_miles: sumOf(rows, 'bike_miles'),
+          swim_yards: sumOf(rows, 'swim_yards'),
           weekly_weight: avgOf(rows, 'weekly_weight'), body_fat: avgOf(rows, 'body_fat'),
           stress:     avgOf(rows, 'stress'),    meditation: sumOf(rows, 'meditation'),
           articles:   sumOf(rows, 'articles'),  podcasts:   sumOf(rows, 'podcasts'),
@@ -4930,6 +4931,16 @@
           // (a month of good weeks would still total ~40 against a limit of 10).
           non_profile_meals: avgOf(rows, 'non_profile_meals'),
           dcp_meals: sumOf(rows, 'dcp_meals'),
+          // These six were charted but never added here, so every one of them
+          // drew an empty card the moment you left the weekly view. Counts
+          // total across a period; clock times and the window are per-day
+          // figures already, so they average.
+          drinks:       sumOf(rows, 'drinks'),
+          cooked_meals: sumOf(rows, 'cooked_meals'),
+          total_meals:  sumOf(rows, 'total_meals'),
+          first_meal_mins:   avgOf(rows, 'first_meal_mins'),
+          last_meal_mins:    avgOf(rows, 'last_meal_mins'),
+          eating_window_hrs: avgOf(rows, 'eating_window_hrs'),
         };
       });
     }
@@ -5355,6 +5366,11 @@
           </div>
         </div>
 
+        <div class="bi-section-heading"><h3>Energy balance</h3><p>${periodLbl} · adjusted TDEE minus intake</p></div>
+        <div class="bi-grid" style="grid-template-columns:1fr">
+          ${chartCard('Calorie deficit', 'Adjusted TDEE minus intake; negative is a surplus', 'calorie_deficit', 'var(--viz-fuel)', v=>Math.round(v), true, 'kcal', DEFICIT_TARGET)}
+        </div>
+
         <div class="bi-section-heading"><h3>Sleep &amp; recovery</h3><p>${periodLbl} · averages for rolled-up periods</p></div>
         <div class="bi-grid">
           ${chartCard('Sleep score', 'Overall sleep quality', 'slp_score', 'var(--viz-sleep)', v=>Math.round(v), false, 'score', SLEEP_SCORE_TARGET)}
@@ -5373,6 +5389,10 @@
         <div class="bi-grid">
           ${chartCard(`${isAgg?'Total intensity':'Intensity'}`, 'Moderate and vigorous minutes', 'intensity_mins', 'var(--viz-body)', v=>Math.round(v), true, 'minutes')}
           ${chartCard('Strength training', `Minutes per week${isAgg?', averaged within each period':''}`, 'strength_mins', 'var(--viz-body)', v=>Math.round(v), true, 'minutes', STRENGTH_TARGET)}
+          ${chartCard(isAgg?'Total run miles':'Run miles', `🏃 From Garmin activities${isAgg?' · total for the period':' · per week'}`, 'run_miles', 'var(--viz-body)', v=>(+v).toFixed(1), true, 'miles')}
+          ${chartCard(isAgg?'Total bike miles':'Bike miles', `🚴 Cycling, biking and rides${isAgg?' · total for the period':' · per week'}`, 'bike_miles', 'var(--viz-body)', v=>(+v).toFixed(1), true, 'miles')}
+          ${chartCard(isAgg?'Total swim yards':'Swim yards', `🏊 Converted from Garmin metres${isAgg?' · total for the period':' · per week'}`, 'swim_yards', 'var(--viz-body)', v=>Math.round(v), true, 'yards')}
+          ${chartCard('Energy expenditure', 'Adjusted TDEE (Garmin × 0.90)', 'adjusted_tdee', 'var(--viz-body)', v=>Math.round(v), false, 'kcal')}
           ${chartCard('Weight', 'Long-term direction matters most', 'weekly_weight', 'var(--viz-body)', v=>(+v).toFixed(1), false, 'lbs')}
           ${chartCard('Body fat', 'Composition trend', 'body_fat', 'var(--viz-body)', v=>(+v).toFixed(1), false, 'percent', BODY_FAT_TARGET, null, true)}
         </div>
@@ -5380,12 +5400,10 @@
         <div class="bi-section-heading"><h3>Nutrition &amp; food log</h3><p>${periodLbl} · averages for rolled-up periods</p></div>
         <div class="bi-grid">
           ${chartCard('Calories consumed', 'Average intake from the food log', 'consumed_cals', 'var(--viz-fuel)', v=>Math.round(v), true, 'kcal', CALORIE_TARGET, null, true)}
-          ${chartCard('Energy expenditure', 'Adjusted TDEE (Garmin \u00d7 0.90)', 'adjusted_tdee', 'var(--viz-fuel)', v=>Math.round(v), false, 'kcal')}
           ${chartCard('Average protein', 'Daily protein from logged meals', 'avg_protein', 'var(--viz-fuel)', v=>Math.round(v), true, 'grams', PROTEIN_TARGET)}
           ${chartCard('Average carbs', 'Daily carbohydrate from logged meals', 'avg_carbs', 'var(--viz-fuel)', v=>Math.round(v), true, 'grams', CARBS_TARGET, null, true)}
           ${chartCard('Average fat', 'Daily fat from logged meals', 'avg_fat', 'var(--viz-fuel)', v=>Math.round(v), true, 'grams', FAT_TARGET, null, true)}
-          ${chartCard('Calorie deficit', 'Adjusted TDEE minus intake; negative is a surplus', 'calorie_deficit', 'var(--viz-fuel)', v=>Math.round(v), true, 'kcal', DEFICIT_TARGET)}
-          ${chartCard('Non-profile meals', `🍔 Under ${NON_PROFILE_PCT}% of calories from protein (≥200 kcal) · per week${isAgg?', averaged within each period':''}`, 'non_profile_meals', 'var(--viz-fuel)', v=>Math.round(v), true, 'meals', NON_PROFILE_TARGET, 'non-profile', true)}
+          ${chartCard('Non-profile meals',`🍔 Under ${NON_PROFILE_PCT}% of calories from protein (≥200 kcal) · per week${isAgg?', averaged within each period':''}`, 'non_profile_meals', 'var(--viz-fuel)', v=>Math.round(v), true, 'meals', NON_PROFILE_TARGET, 'non-profile', true)}
           ${chartCard(isAgg?'Total desserts & pastries':'Desserts & pastries', `🍪 Cookies, cake, croissants, brownies${isAgg?' · total for the period':' · per week'}`, 'dcp_meals', 'var(--viz-fuel)', v=>Math.round(v), true, 'items', null, 'dcp')}
           ${chartCard(isAgg?'Total drinks':'Drinks', `🍷 Counted from the food log${isAgg?' · total for the period':' · per week'}`, 'drinks', 'var(--viz-fuel)', fmtDrinks, true, 'drinks', null, 'drinks')}
           ${chartCard(isAgg?'Total cooked at home':'Cooked at home', `🏠 Logged with Source = Home${isAgg?' · total for the period':' · per week'}`, 'cooked_meals', 'var(--viz-fuel)', v=>Math.round(v), true, 'meals', null, 'cooked')}
