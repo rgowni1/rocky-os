@@ -25,6 +25,17 @@ on:
   #
   # workflow_dispatch is kept so this can be re-tested occasionally -- if the
   # throttle is transient, re-enable the two crons below.
+  #
+  # 2026-11-12, first run from rocky-os: SUCCEEDED. No 429 anywhere. Fetched 14
+  # daily rows, 2 sleep nights, 17 activities and 1470 session samples, upserted
+  # all of it, and wrote 13 properties to Notion. So the throttle is at least
+  # not permanent.
+  #
+  # Still not re-enabling on one green run -- a range-level throttle that
+  # cleared once can come back, and the launchd job on the Mac has been covering
+  # this the whole time. Dispatch it manually a few more times; if it keeps
+  # passing, uncomment the crons and retire com.rockygowni.garmin-sync. Writes
+  # are idempotent upserts, so the overlap during a trial period is harmless.
   workflow_dispatch:
   # schedule:
   #   - cron: '12 14 * * *'

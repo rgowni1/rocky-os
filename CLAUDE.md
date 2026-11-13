@@ -58,14 +58,21 @@ are **stdlib-only by design** — their workflows deliberately skip `pip install
 Don't add a third-party import to them without also adding the install step.
 The rest install `sync/requirements.txt`.
 
-### Garmin runs on the Mac, not on Actions
+### Garmin runs on the Mac, not on Actions — but that may be changing
 
-`garmin-sync.yml` has its schedules commented out. Garmin rate-limits GitHub's
-Azure egress ranges — every MCP call comes back `429`, while the same token
-works from a residential IP seconds later. It is not an auth problem and there
-is no backoff that fixes it from our side. The live path is the launchd job on
-the Mac (`com.rockygowni.garmin-sync`, 06:10 and 22:30 Pacific).
-`workflow_dispatch` is kept so the throttle can be re-tested occasionally.
+`garmin-sync.yml` has its schedules commented out. Garmin was rate-limiting
+GitHub's Azure egress ranges: every MCP call came back `429`, while the same
+token worked from a residential IP seconds later. Not auth, and no amount of
+backoff fixed it from our side. The live path is the launchd job on the Mac
+(`com.rockygowni.garmin-sync`, 06:10 and 22:30 Pacific).
+
+**The first dispatch from rocky-os on 2026-11-12 succeeded outright** — no 429,
+14 daily rows + 2 sleep nights + 17 activities + 1470 samples upserted, 13
+properties written to Notion. The throttle is evidently not permanent. It is
+still not re-enabled on the strength of one run; dispatch it manually a few
+more times, and if it keeps passing, uncomment the crons and retire the launchd
+job. Every write is an idempotent upsert, so running both during a trial
+period costs nothing but duplicate log lines.
 
 If Garmin auth itself fails, the OAuth1 token (≈1 year life) has been revoked,
 and the only fix is `npm run setup` locally with a password and MFA code:
